@@ -53,6 +53,23 @@ func doMap(
 	//
 	// Your code here (Part I).
 	//
+
+	// Call mapF
+	// inText := read from inFile
+	// mapOutput := mapF(inFile, inText)
+
+	// Partition mapOutput into nReduce pieces
+	// partitions := slice of nReduce []KeyValue elements
+	// For each keyval's key:
+		// r := ihash(key) % nReduce
+		// append keyval to partitions[r]
+
+	// Encode pieces to JSON & write to corresponding temp files
+	// For r in range(nReduce):
+		// Create file with filename = reduceName(jobName, mapTask, r)
+		// Take contents of partitions[r], encode to JSON, and write to the file
+	
+	// Close inFile
 }
 
 func ihash(s string) int {

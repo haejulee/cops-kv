@@ -44,4 +44,28 @@ func doReduce(
 	//
 	// Your code here (Part I).
 	// 
+
+	// Read input from intermediate files
+	// inputs := make([]KeyValue)
+	// For m in nMap:
+		// Create/open file called reduceName(jobName, m, reduceTask)
+		// Read contents of file, decode from JSON to KeyValue pairs,
+		// Append KeyValues to inputs
+		// Close file
+	
+	// Sort inputs by keys, aggregate all values with identical keys
+	// Sort inputs by key value
+	// sortedInputs := make []struct{ key string; values []string }
+	// For keyval in inputs:
+		// If key of last element in sortedInputs == keyval.Key:
+			// Append keyval.Value to lastelement.values
+		// Else:
+			// Append new element to sortedInputs,
+			// Set newelement.key = keyval.Key
+			// Append keyval.Value to newelement.values
+	
+	// Call reduceF for each distinct key
+	// For kv in sortedInputs:
+		// output := reduceF(kv.key, kv.values)
+		// encode output to JSON & write to outFile
 }
