@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"hash/fnv"
 	"io/ioutil"
+	"log"
 	"os"
 )
 
@@ -57,8 +58,8 @@ func doMap(
 	
 	// Call mapF
 	bytes, err := ioutil.ReadFile(inFile)
-    if err != nil {
-		panic(err)
+	if err != nil {
+		log.Fatal("Map: %", err)
 	}
 	inText := string(bytes)
 	mapOutput := mapF(inFile, inText)
@@ -75,16 +76,16 @@ func doMap(
 		fileName := reduceName(jobName, mapTask, r)
 		file, err := os.OpenFile(fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 		if err != nil {
-			panic(err)
+			log.Fatal("Map: %", err)
 		}
 		enc := json.NewEncoder(file)
 		for _, keyval := range partitions[r] {
 			if err = enc.Encode(&keyval); err != nil {
-				panic(err)
+				log.Fatal("Map: %", err)
 			}
 		}
 		if err := file.Close(); err != nil {
-			panic(err)
+			log.Fatal("Map: %", err)
 		}
 	}
 }

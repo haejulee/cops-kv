@@ -2,6 +2,7 @@ package mapreduce
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"sort"
 )
@@ -57,19 +58,19 @@ func doReduce(
 		fileName := reduceName(jobName, m, reduceTask)
 		file, err := os.Open(fileName)
 		if err != nil {
-			panic(err)
+			log.Fatal("Reduce: %", err)
 		}
 		dec := json.NewDecoder(file)
 		for dec.More() {
 			var keyval KeyValue
 			err = dec.Decode(&keyval)
 			if err != nil {
-				panic(err)
+				log.Fatal("Reduce: %", err)
 			}
 			inputs = append(inputs, keyval)
 		}
 		if err = file.Close(); err != nil {
-			panic(err)
+			log.Fatal("Reduce: %", err)
 		}
 	}
 	
@@ -89,14 +90,14 @@ func doReduce(
 	// Call reduceF for each distinct key, write to outFile
 	file, err := os.OpenFile(outFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
-		panic(err)
+		log.Fatal("Reduce: %", err)
 	}
 	enc := json.NewEncoder(file)
 	for _, keyval := range sortedInputs {
 		output := reduceF(keyval.key, keyval.values)
 		// encode output to JSON & write to outFile
 		if err = enc.Encode(KeyValue{keyval.key, output}); err != nil {
-			panic(err)
+			log.Fatal("Reduce: %", err)
 		}
 	}
 }
