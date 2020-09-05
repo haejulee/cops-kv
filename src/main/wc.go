@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"mapreduce"
 	"os"
+	"strconv"
+	"unicode"
 )
 
 //
@@ -14,7 +17,35 @@ import (
 // of key/value pairs.
 //
 func mapF(filename string, contents string) []mapreduce.KeyValue {
-	// Your code here (Part II).
+	// Count words and save word counts in wc
+	wc := make(map[string]int)
+	runes := []rune(contents)
+	wi := -1	// Index of the start of a new letter
+	for i, c := range runes {
+		if unicode.IsLetter(c) {
+			if wi < 0 {
+				wi = i
+			}
+		} else if wi >= 0 {
+			word := string(runes[wi:i])
+			if _, ok := wc[word]; ok == true {
+				wc[word] += 1
+			} else {
+				wc[word] = 1
+			}
+			wi = -1
+		}
+	}
+	// Convert wc to a slice of KeyValue items
+	var results []mapreduce.KeyValue
+	for key, value := range wc {
+		var kv mapreduce.KeyValue
+		kv.Key = key
+		kv.Value = strconv.Itoa(value)
+		results = append(results, kv)
+	}
+	// Return results
+	return results
 }
 
 //
@@ -23,7 +54,15 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 // any map task.
 //
 func reduceF(key string, values []string) string {
-	// Your code here (Part II).
+	sum := 0
+	for _, val := range values {
+		intval, err := strconv.Atoi(val)
+		if err != nil {
+			log.Fatal("reduceF: ", err)
+		}
+		sum += intval
+	}
+	return strconv.Itoa(sum)
 }
 
 // Can be run in 3 ways:
