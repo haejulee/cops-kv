@@ -1,7 +1,10 @@
 package mapreduce
 
 import (
+	"encoding/json"
 	"hash/fnv"
+	"io/ioutil"
+	"os"
 )
 
 func doMap(
@@ -51,25 +54,39 @@ func doMap(
 	//
 	// Remember to close the file after you have written all the values!
 	//
-	// Your code here (Part I).
-	//
-
+	
 	// Call mapF
-	// inText := read from inFile
-	// mapOutput := mapF(inFile, inText)
+	bytes, err := ioutil.ReadFile(inFile)
+    if err != nil {
+		panic(err)
+	}
+	inText := string(bytes)
+	mapOutput := mapF(inFile, inText)
 
 	// Partition mapOutput into nReduce pieces
-	// partitions := slice of nReduce []KeyValue elements
-	// For each keyval's key:
-		// r := ihash(key) % nReduce
-		// append keyval to partitions[r]
+	partitions := make([][]KeyValue, nReduce, nReduce) // nReduce x []KeyValue
+	for _, keyval := range mapOutput {
+		r := ihash(keyval.Key) % nReduce
+		partitions[r] = append(partitions[r], keyval)
+	}
 
 	// Encode pieces to JSON & write to corresponding temp files
-	// For r in range(nReduce):
-		// Create file with filename = reduceName(jobName, mapTask, r)
-		// Take contents of partitions[r], encode to JSON, and write to the file
-	
-	// Close inFile
+	for r := 0; r < nReduce; r++ {
+		fileName := reduceName(jobName, mapTask, r)
+		file, err := os.OpenFile(fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		if err != nil {
+			panic(err)
+		}
+		enc := json.NewEncoder(file)
+		for _, keyval := range partitions[r] {
+			if err = enc.Encode(&keyval); err != nil {
+				panic(err)
+			}
+		}
+		if err := file.Close(); err != nil {
+			panic(err)
+		}
+	}
 }
 
 func ihash(s string) int {

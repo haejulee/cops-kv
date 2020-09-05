@@ -1,5 +1,11 @@
 package mapreduce
 
+import (
+	"encoding/json"
+	"os"
+	"sort"
+)
+
 func doReduce(
 	jobName string, // the name of the whole MapReduce job
 	reduceTask int, // which reduce task this is
@@ -46,26 +52,51 @@ func doReduce(
 	// 
 
 	// Read input from intermediate files
-	// inputs := make([]KeyValue)
-	// For m in nMap:
-		// Create/open file called reduceName(jobName, m, reduceTask)
-		// Read contents of file, decode from JSON to KeyValue pairs,
-		// Append KeyValues to inputs
-		// Close file
+	var inputs []KeyValue
+	for m := 0; m < nMap; m++ {
+		fileName := reduceName(jobName, m, reduceTask)
+		file, err := os.Open(fileName)
+		if err != nil {
+			panic(err)
+		}
+		dec := json.NewDecoder(file)
+		for dec.More() {
+			var keyval KeyValue
+			err = dec.Decode(&keyval)
+			if err != nil {
+				panic(err)
+			}
+			inputs = append(inputs, keyval)
+		}
+		if err = file.Close(); err != nil {
+			panic(err)
+		}
+	}
 	
 	// Sort inputs by keys, aggregate all values with identical keys
-	// Sort inputs by key value
-	// sortedInputs := make []struct{ key string; values []string }
-	// For keyval in inputs:
-		// If key of last element in sortedInputs == keyval.Key:
-			// Append keyval.Value to lastelement.values
-		// Else:
-			// Append new element to sortedInputs,
-			// Set newelement.key = keyval.Key
-			// Append keyval.Value to newelement.values
+	keysorter := func(i, j int) bool { return inputs[i].Key < inputs[j].Key }
+	sort.SliceStable(inputs, keysorter)
+	type keyVals = struct{ key string; values []string }
+	var sortedInputs []keyVals
+	for _, keyval := range inputs {
+		if len(sortedInputs) == 0 || sortedInputs[len(sortedInputs)-1].key != keyval.Key {
+			sortedInputs = append(sortedInputs, keyVals{keyval.Key, []string{keyval.Value}})
+		} else {
+			sortedInputs[len(sortedInputs)-1].values = append(sortedInputs[len(sortedInputs)-1].values, keyval.Value)
+		}
+	}	
 	
-	// Call reduceF for each distinct key
-	// For kv in sortedInputs:
-		// output := reduceF(kv.key, kv.values)
+	// Call reduceF for each distinct key, write to outFile
+	file, err := os.OpenFile(outFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		panic(err)
+	}
+	enc := json.NewEncoder(file)
+	for _, keyval := range sortedInputs {
+		output := reduceF(keyval.key, keyval.values)
 		// encode output to JSON & write to outFile
+		if err = enc.Encode(KeyValue{keyval.key, output}); err != nil {
+			panic(err)
+		}
+	}
 }
