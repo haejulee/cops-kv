@@ -51,7 +51,7 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 		}
 	case reducePhase:
 		doTask = func(i int) {
-			reduceTask(jobName, i, nMap, channels[i], &wg)
+			reduceTask(jobName, i, len(mapFiles), channels[i], &wg)
 		}
 	}
 
