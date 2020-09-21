@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	minElectionTimeout int64 = 1000000000	// 1.0 sec
-	maxElectionTimeout int64 = 2000000000	// 2.0 sec
+	minElectionTimeout int64 =  500000000	// 0.5 sec
+	maxElectionTimeout int64 = 1000000000	// 1.0 sec
 	heartbeatPeriod    int64 =  100000000	// 0.1 sec
 )
 
