@@ -81,12 +81,24 @@ func (rf *Raft) requestVotes(args *RequestVoteArgs) {
 		}
 	}
 	// Wait until majority vote acquired
-	for ctr.votedFor <= len(rf.peers)/2 {
+	for true {
+		// If majority vote acquired, break from loop
+		ctr.mu.Lock()
+		if ctr.votedFor > len(rf.peers)/2 {
+			ctr.mu.Unlock()
+			break
+		}
+		ctr.mu.Unlock()
 		// If rf is past this election's term, return
 		// If rf isn't a candidate anymore, also return
+		rf.mu.Lock()
 		if rf.currentTerm > args.Term || rf.currentRole != Candidate {
+			rf.mu.Unlock()
 			return
 		}
+		rf.mu.Unlock()
+		// Sleep to prevent livelock
+		time.Sleep(time.Duration(heartbeatPeriod/2))
 	}
 	// Once majority vote has been received:
 	rf.mu.Lock()
@@ -146,7 +158,7 @@ func (rf *Raft) requestVote(i int, args *RequestVoteArgs, ctr *voteCounter) {
 }
 
 func (rf *Raft) leaderHeartbeats(term int) {
-	for rf.currentTerm == term && rf.currentRole == Leader {
+	for true {
 		// Send out heartbeats
 		rf.mu.Lock()
 		if rf.currentTerm == term && rf.currentRole == Leader {
@@ -163,6 +175,10 @@ func (rf *Raft) leaderHeartbeats(term int) {
 					go rf.sendHeartbeat(i, args)
 				}
 			}
+		} else {
+			// If term has passed or no longer leader, break from loop
+			rf.mu.Unlock()
+			return
 		}
 		rf.mu.Unlock()
 		// Sleep until next heartbeat time
