@@ -68,10 +68,12 @@ func (rf *Raft) readPersist(data []byte) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	// If rf isn't leader, return false
 	if rf.currentRole != Leader {
+		rf.mu.Unlock()
 		return 0, 0, false
 	}
-	rf.mu.Lock()
 	// Get next index & current term
 	index := len(rf.log)
 	term := rf.currentTerm
