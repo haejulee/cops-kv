@@ -1,15 +1,19 @@
 package raft
 
 import (
-	"labrpc"
+	"bytes"
+	"log"
 	"time"
+
+	"labgob"
+	"labrpc"
 )
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (term int, isLeader bool) {
 	rf.mu.Lock()
-	term = rf.currentTerm
+	term = rf.CurrentTerm
 	isLeader = rf.currentRole == Leader
 	rf.mu.Unlock()
 	return
@@ -21,14 +25,13 @@ func (rf *Raft) GetState() (term int, isLeader bool) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.CurrentTerm)
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.Log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -38,19 +41,19 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var CurrentTerm, VotedFor int
+	var Log []logEntry
+	if d.Decode(&CurrentTerm) != nil ||
+		d.Decode(&VotedFor) != nil ||
+		d.Decode(&Log) != nil {
+		log.Fatal("failed to decode persistent state")
+	} else {
+		rf.CurrentTerm = CurrentTerm
+		rf.VotedFor = VotedFor
+		rf.Log = Log
+	}
 }
 
 //
@@ -75,12 +78,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return 0, 0, false
 	}
 	// Get next index & current term
-	index := len(rf.log)
-	term := rf.currentTerm
+	index := len(rf.Log)
+	term := rf.CurrentTerm
 	// Create log entry for command
 	entry := logEntry{term, command}
 	// Append new log entry to log
-	rf.log = append(rf.log, entry)
+	rf.Log = append(rf.Log, entry)
 	rf.mu.Unlock()
 	return index, term, true
 }
@@ -116,9 +119,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Initialize persistent state
-	rf.currentTerm = 0			// Start at term 0
-	rf.votedFor = -1			// Null value of votedFor is -1
-	rf.log = []logEntry{		// Initialize log with dummy entry at index 0
+	rf.CurrentTerm = 0			// Start at term 0
+	rf.VotedFor = -1			// Null value of votedFor is -1
+	rf.Log = []logEntry{		// Initialize log with dummy entry at index 0
 		logEntry{0,nil},		// (first log entry index is 1)
 	}
 
@@ -149,7 +152,7 @@ func (rf *Raft) applyCommands(applyCh chan ApplyMsg) {
 		var i int
 		for rf.lastApplied < rf.commitIndex {
 			i = rf.lastApplied + 1
-			msg := ApplyMsg{true, rf.log[i].Command, i}
+			msg := ApplyMsg{true, rf.Log[i].Command, i}
 			applyCh <- msg
 			rf.lastApplied = i
 		}
