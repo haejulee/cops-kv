@@ -200,7 +200,7 @@ func (rf *Raft) sendHeartbeat(i int, args *AppendEntriesArgs) {
 			rf.updateTerm(reply.Term)
 		} else if !reply.Success {
 			// If otherwise returned false, decrement rf.nextIndex[i]
-			rf.nextIndex[i] = args.PrevLogIndex
+			rf.nextIndex[i] = reply.ConflictIndex
 		}
 		rf.mu.Unlock()
 	}

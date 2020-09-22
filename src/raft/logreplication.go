@@ -69,7 +69,7 @@ func (rf *Raft) replicateLog(i int, args *AppendEntriesArgs) {
 				}
 			} else {
 				// Else if success returned false, decrement rf.nextIndex[i]
-				rf.nextIndex[i] = args.PrevLogIndex
+				rf.nextIndex[i] = reply.ConflictIndex
 			}
 			rf.mu.Unlock()
 		}
