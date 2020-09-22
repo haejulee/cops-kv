@@ -29,7 +29,10 @@ func (rf *Raft) persist() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.CurrentTerm)
 	e.Encode(rf.VotedFor)
-	e.Encode(rf.Log)
+	e.Encode(len(rf.Log))
+	for i := range rf.Log {
+		e.Encode(rf.Log[i])
+	}
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -43,16 +46,22 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	var CurrentTerm, VotedFor int
-	var Log []logEntry
+	var CurrentTerm, VotedFor, nLogs int
 	if d.Decode(&CurrentTerm) != nil ||
 		d.Decode(&VotedFor) != nil ||
-		d.Decode(&Log) != nil {
+		d.Decode(&nLogs) != nil {
 		log.Fatal("failed to decode persistent state")
-	} else {
-		rf.CurrentTerm = CurrentTerm
-		rf.VotedFor = VotedFor
-		rf.Log = Log
+	}
+	rf.CurrentTerm = CurrentTerm
+	rf.VotedFor = VotedFor
+	rf.Log = make([]logEntry, nLogs)
+	for i:=0; i<nLogs; i++ {
+		var entry logEntry
+		if d.Decode(&entry) != nil {
+			log.Fatal("failed to decode persistent state")
+		}
+		rf.Log[i].Term = entry.Term
+		rf.Log[i].Command = entry.Command
 	}
 }
 
