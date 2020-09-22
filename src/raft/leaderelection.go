@@ -114,8 +114,11 @@ func (rf *Raft) requestVotes(args *RequestVoteArgs) {
 			rf.nextIndex[i] = len(rf.log)	// last log index + 1
 			rf.matchIndex[i] = 0
 		}
-		// Save the term for which rf became leader, then let go of lock
+		// Save the term for which rf became leader
 		leaderTerm := rf.currentTerm
+		// Start log replication on leader
+		go rf.leaderLogReplication(leaderTerm)
+		// Let go of lock
 		rf.mu.Unlock()
 		// Start sending out periodic heartbeats
 		rf.leaderHeartbeats(leaderTerm)
@@ -190,14 +193,16 @@ func (rf *Raft) sendHeartbeat(i int, args *AppendEntriesArgs) {
 	var reply AppendEntriesReply
 	ok := rf.sendAppendEntries(i, args, &reply)
 	if ok {
-		// For heartbeating, only check term of reply (TODO: should this be changed?)
+		rf.mu.Lock()
+		// Check term of the reply
 		if reply.Term > args.Term {
-			rf.mu.Lock()
 			// If reply.Term is greater than current term, update current term
 			rf.updateTerm(reply.Term)
-			rf.mu.Unlock()
-			return
+		} else if !reply.Success {
+			// If otherwise returned false, decrement rf.nextIndex[i]
+			rf.nextIndex[i] = args.PrevLogIndex
 		}
+		rf.mu.Unlock()
 	}
 }
 
