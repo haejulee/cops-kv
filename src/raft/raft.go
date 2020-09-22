@@ -93,6 +93,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	entry := logEntry{term, command}
 	// Append new log entry to log
 	rf.Log = append(rf.Log, entry)
+	// Persist changes to log
+	rf.persist()
 	rf.mu.Unlock()
 	return index, term, true
 }
