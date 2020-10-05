@@ -171,7 +171,9 @@ func (rf *Raft) applyCommands(applyCh chan ApplyMsg) {
 		for rf.lastApplied < rf.commitIndex {
 			i = rf.lastApplied + 1
 			msg := ApplyMsg{true, rf.Log[i].Command, i}
+			rf.mu.Unlock()
 			applyCh <- msg
+			rf.mu.Lock()
 			rf.lastApplied = i
 		}
 		rf.mu.Unlock()
