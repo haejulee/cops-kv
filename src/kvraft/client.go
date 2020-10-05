@@ -6,8 +6,9 @@ import "math/big"
 
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
+	servers		[]*labrpc.ClientEnd
+	lastLeader	int
+	clientID	int
 }
 
 func nrand() int64 {
@@ -18,10 +19,18 @@ func nrand() int64 {
 }
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
+	// Make a new Clerk struct
 	ck := new(Clerk)
+	// Save servers to Clerk struct
 	ck.servers = servers
-	// You'll have to add code here.
+	// Get a client ID assigned by the servers
+	ck.clientID = -1
+	// Return the Clerk struct
 	return ck
+}
+
+func (ck *Clerk) randomServer() int64 {
+	return nrand() % int64(len(ck.servers))
 }
 
 //
@@ -37,7 +46,10 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-
+	// If haven't received a client ID, obtain one first
+	if ck.clientID < 0 {
+		ck.clientID = ck.registerClient()
+	}
 	// You will have to modify this function.
 	return ""
 }
@@ -53,6 +65,10 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
+	// If haven't received a client ID, obtain one first
+	if ck.clientID < 0 {
+		ck.clientID = ck.registerClient()
+	}
 	// You will have to modify this function.
 }
 
@@ -61,4 +77,18 @@ func (ck *Clerk) Put(key string, value string) {
 }
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
+}
+
+func (ck *Clerk) registerClient() int {
+	ok := false
+	var args RegisterClientArgs
+	var reply RegisterClientReply
+	for !ok {
+		i := ck.randomServer()
+		ok = ck.servers[i].Call("KVServer.RegisterClient", &args, &reply)
+		if ok && reply.ClientID < 0 {
+			ok = false
+		}
+	}
+	return reply.ClientID
 }

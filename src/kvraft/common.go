@@ -32,3 +32,9 @@ type GetReply struct {
 	Err         Err
 	Value       string
 }
+
+type RegisterClientArgs struct {}
+
+type RegisterClientReply struct {
+	ClientID	int
+}

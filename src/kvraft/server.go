@@ -18,10 +18,21 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 
+const (
+	OpRegisterClient uint8 = iota
+	OpPut
+	OpAppend
+	OpGet
+)
+
+// The struct representing each Put/Append/Get command in the Raft log
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Type 		uint8
+	Key			string
+	Value		string
+	
+	ClientID	uint16
+	CommandID	uint8
 }
 
 type KVServer struct {
@@ -32,7 +43,7 @@ type KVServer struct {
 
 	maxraftstate int // snapshot if log grows this big
 
-	// Your definitions here.
+	lastApplied []Op
 }
 
 
@@ -42,6 +53,67 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+}
+
+func (kv *KVServer) RegisterClient(args *RegisterClientArgs, reply *RegisterClientReply) {
+	kv.mu.Lock()
+	// Try to append a RegisterClient command to the log
+	var command Op
+	command.Type = OpRegisterClient
+	index, term, isLeader := kv.rf.Start(command)
+	// If not leader, return WrongLeader
+	if !isLeader {
+		reply.ClientID = -1
+	} else { // Else:
+		// Read from applyCh until RegisterClient operation shows up
+		for {
+			// Keep checking if still leader for the same term
+			if curTerm, _ := kv.rf.GetState(); curTerm != term {
+				reply.ClientID = -1
+				break
+			}
+			// Do a non-blocking read from applyCh
+			committed, ok := kv.readApplyCh()
+			if !ok {
+				continue
+			}
+			// Apply the command
+			if committed.CommandValid {
+				kv.apply(committed.Command.(Op))
+			}
+			// Keep going until the log entry with index is committed
+			if committed.CommandIndex == index {
+				// If the RegisterClient operation successfully committed
+				if committed.CommandValid && 
+				   committed.Command.(Op).Type == OpRegisterClient {
+					// Return the index of the new element of kv.lastApplied
+					reply.ClientID = len(kv.lastApplied) - 1
+				} else { // Else
+					// Return failure
+					reply.ClientID = -1
+				}
+				break
+			}
+		}
+	}
+	kv.mu.Unlock()
+}
+
+func (kv *KVServer) readApplyCh() (raft.ApplyMsg, bool) {
+	select {
+    case applyMsg := <-kv.applyCh:
+        return applyMsg, true
+    default:
+        return raft.ApplyMsg{}, false
+    }
+}
+
+func (kv *KVServer) apply(op Op) {
+	switch op.Type {
+	case OpRegisterClient:
+		kv.lastApplied = append(kv.lastApplied, op)
+	default:
+	}
 }
 
 //
