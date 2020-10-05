@@ -6,9 +6,10 @@ import "math/big"
 
 
 type Clerk struct {
-	servers		[]*labrpc.ClientEnd
-	lastLeader	int
-	clientID	int
+	servers			[]*labrpc.ClientEnd
+	lastLeader		int
+	clientID		int
+	nextCommandID	uint8
 }
 
 func nrand() int64 {
@@ -23,14 +24,15 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	// Save servers to Clerk struct
 	ck.servers = servers
-	// Get a client ID assigned by the servers
+	// Initialize clientID & nextCommandID
 	ck.clientID = -1
+	ck.nextCommandID = 1
 	// Return the Clerk struct
 	return ck
 }
 
-func (ck *Clerk) randomServer() int64 {
-	return nrand() % int64(len(ck.servers))
+func (ck *Clerk) randomServer() int {
+	return int(nrand() % int64(len(ck.servers)))
 }
 
 //
@@ -50,7 +52,31 @@ func (ck *Clerk) Get(key string) string {
 	if ck.clientID < 0 {
 		ck.clientID = ck.registerClient()
 	}
-	// You will have to modify this function.
+	// Initialize arguments & reply struct
+	args := GetArgs { key, ck.clientID, ck.nextCommandID }
+	ck.nextCommandID += 1
+	var reply GetReply
+	ok := false
+	// Loop while ok == false
+	for i := ck.lastLeader; !ok; i = ck.randomServer() {
+		// Send Get RPC to a server
+		ok = ck.servers[i].Call("KVServer.Get", &args, &reply)
+		// If RPC succeeded:
+		if ok {
+			if reply.WrongLeader {
+				// If wrong leader, set ok = false
+				ok = false
+			} else if reply.Err != OK {
+				// If error, return empty string
+				return ""
+			} else {
+				// Else, update last leader
+				ck.lastLeader = i
+				// Return value
+				return reply.Value
+			}
+		}
+	}
 	return ""
 }
 
@@ -69,7 +95,26 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	if ck.clientID < 0 {
 		ck.clientID = ck.registerClient()
 	}
-	// You will have to modify this function.
+	// Initialize arguments & reply struct
+	args := PutAppendArgs { key, value, op, ck.clientID, ck.nextCommandID }
+	ck.nextCommandID += 1
+	var reply PutAppendReply
+	ok := false
+	// Loop while ok == false
+	for i := ck.lastLeader; !ok; i = ck.randomServer() {
+		// Send PutAppend RPC to a server
+		ok = ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
+		// If RPC succeeded:
+		if ok {
+			if reply.WrongLeader {
+				// If wrong leader, set ok = false
+				ok = false
+			} else {
+				// Else, update last leader
+				ck.lastLeader = i
+			}
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
@@ -83,12 +128,14 @@ func (ck *Clerk) registerClient() int {
 	ok := false
 	var args RegisterClientArgs
 	var reply RegisterClientReply
+	var i int
 	for !ok {
-		i := ck.randomServer()
+		i = ck.randomServer()
 		ok = ck.servers[i].Call("KVServer.RegisterClient", &args, &reply)
 		if ok && reply.ClientID < 0 {
 			ok = false
 		}
 	}
+	ck.lastLeader = i
 	return reply.ClientID
 }
