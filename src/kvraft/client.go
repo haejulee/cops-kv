@@ -28,6 +28,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.clientID = -1
 	ck.nextCommandID = 1
 	// Return the Clerk struct
+	DPrintf("Made a clerk!\n")
 	return ck
 }
 
@@ -50,31 +51,40 @@ func (ck *Clerk) randomServer() int {
 func (ck *Clerk) Get(key string) string {
 	// If haven't received a client ID, obtain one first
 	if ck.clientID < 0 {
+		DPrintf("Requesting Client ID...\n")
 		ck.clientID = ck.registerClient()
+		DPrintf("Client ID %d\n", ck.clientID)
 	}
 	// Initialize arguments & reply struct
 	args := GetArgs { key, ck.clientID, ck.nextCommandID }
+	DPrintf("Client %d requesting Get %d\n", args.ClientID, args.CommandID)
 	ck.nextCommandID += 1
-	var reply GetReply
 	ok := false
 	// Loop while ok == false
 	for i := ck.lastLeader; !ok; i = ck.randomServer() {
+		var reply GetReply
 		// Send Get RPC to a server
 		ok = ck.servers[i].Call("KVServer.Get", &args, &reply)
 		// If RPC succeeded:
 		if ok {
-			if reply.WrongLeader {
+			DPrintf("%d-%d reply: WrongLeader=%d, Value=%s %p\n", args.ClientID, args.CommandID, reply.WrongLeader, reply.Value, &reply)
+			if reply.WrongLeader == true {
+				DPrintf("Client %d received WrongLeader for %d\n", args.ClientID, args.CommandID)
 				// If wrong leader, set ok = false
 				ok = false
 			} else if reply.Err != OK {
+				DPrintf("Client %d received Error for %d\n", args.ClientID, args.CommandID)
 				// If error, return empty string
 				return ""
 			} else {
+				DPrintf("Client %d received Get response %d\n", args.ClientID, args.CommandID)
 				// Else, update last leader
 				ck.lastLeader = i
 				// Return value
 				return reply.Value
 			}
+		} else {
+			DPrintf("Client %d network failure: Get %d\n", args.ClientID, args.CommandID)
 		}
 	}
 	return ""
@@ -93,28 +103,34 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// If haven't received a client ID, obtain one first
 	if ck.clientID < 0 {
+		DPrintf("Requesting Client ID...\n")
 		ck.clientID = ck.registerClient()
+		DPrintf("Client ID %d\n", ck.clientID)
 	}
 	// Initialize arguments & reply struct
 	args := PutAppendArgs { key, value, op, ck.clientID, ck.nextCommandID }
+	DPrintf("Client %d requesting PutAppend %d\n", args.ClientID, args.CommandID)
 	ck.nextCommandID += 1
-	var reply PutAppendReply
 	ok := false
 	// Loop while ok == false
 	for i := ck.lastLeader; !ok; i = ck.randomServer() {
+		var reply PutAppendReply
 		// Send PutAppend RPC to a server
 		ok = ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 		// If RPC succeeded:
 		if ok {
-			if reply.WrongLeader {
+			if reply.WrongLeader == true {
 				// If wrong leader, set ok = false
 				ok = false
 			} else {
 				// Else, update last leader
 				ck.lastLeader = i
 			}
+		} else {
+			DPrintf("Client %d network failure: PutAppend %d\n", args.ClientID, args.CommandID)
 		}
 	}
+	DPrintf("Client %d PutAppend %d success\n", args.ClientID, args.CommandID)
 }
 
 func (ck *Clerk) Put(key string, value string) {

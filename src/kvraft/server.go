@@ -4,15 +4,25 @@ import (
 	"labgob"
 	"labrpc"
 	"log"
+	"os"
 	"raft"
 	"sync"
 	"time"
 )
 
 const Debug = 0
+var logFile *os.File = nil
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
+		if logFile == nil {
+			var err error
+			logFile, err = os.OpenFile("debug-logs.txt", os.O_RDWR | os.O_CREATE | os.O_APPEND, 0666)
+			if err != nil {
+				log.Fatal("error opening logFile", err)
+			}
+			log.SetOutput(logFile)
+		}
 		log.Printf(format, a...)
 	}
 	return
@@ -56,7 +66,10 @@ type cmdResults struct {
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	setWrongLeader := func() { reply.WrongLeader = true }
+	setWrongLeader := func() {
+		DPrintf("KVServer %d WrongLeader Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
+		reply.WrongLeader = true
+	}
 	
 	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
 		lastApplied := kv.lastApplied[args.ClientID]
@@ -64,6 +77,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			reply.WrongLeader = false
 			reply.Err = lastApplied.err
 			reply.Value = lastApplied.value
+			DPrintf("KVServer %d successfully returning Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
 			return true
 		} else { return false }
 	}
@@ -71,18 +85,22 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	createCommand := func() Op {
 		return Op { OpGet, args.Key, "", args.ClientID, args.CommandID }
 	}
-	
 	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
+	DPrintf("KVServer %d Get %d-%d: WrongLeader %t %p\n", kv.me, args.ClientID, args.CommandID, reply.WrongLeader, reply)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	setWrongLeader := func() { reply.WrongLeader = true }
+	setWrongLeader := func() {
+		DPrintf("KVServer %d WrongLeader PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
+		reply.WrongLeader = true
+	}
 	
 	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
 		lastApplied := kv.lastApplied[args.ClientID]
 		if lastApplied.cmd.CommandID == args.CommandID {
 			reply.WrongLeader = false
 			reply.Err = lastApplied.err
+			DPrintf("KVServer %d successfully returning PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
 			return true
 		} else { return false }
 	}
@@ -96,8 +114,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		}
 		return command
 	}
-	
 	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
+	DPrintf("KVServer %d PutAppend %d-%d: WrongLeader %t %p\n", kv.me, args.ClientID, args.CommandID, reply.WrongLeader, reply)
 }
 
 func (kv *KVServer) RegisterClient(args *RegisterClientArgs, reply *RegisterClientReply) {
@@ -108,7 +126,9 @@ func (kv *KVServer) RegisterClient(args *RegisterClientArgs, reply *RegisterClie
 			if msg.CommandValid &&
 			   msg.Command.(Op).Type == OpRegisterClient {
 				reply.ClientID = len(kv.lastApplied) - 1
+				DPrintf("KVServer %d assigned ClientID %d\n", kv.me, reply.ClientID)
 			} else {
+				DPrintf("KVServer %d failed to assign a ClientID\n", kv.me)
 				reply.ClientID = -1
 			}
 			return true
