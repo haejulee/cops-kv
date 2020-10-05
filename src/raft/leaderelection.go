@@ -55,6 +55,7 @@ func (rf *Raft) leaderElection() {
 	// Start new term as candidate
 	rf.CurrentTerm += 1
 	rf.currentRole = Candidate
+	DPrintf("Raft %d starting election %d\n", rf.me, rf.CurrentTerm)
 	// Vote for self
 	rf.VotedFor = rf.me
 	// Persist changes made to current term & voted for
@@ -118,6 +119,7 @@ func (rf *Raft) requestVotes(args *RequestVoteArgs) {
 		rf.cancelTimeout()
 		// Become leader
 		rf.currentRole = Leader
+		DPrintf("Raft %d became leader, term %d\n", rf.me, rf.CurrentTerm)
 		for i := range rf.peers {
 			// Initialize leader volatile state
 			rf.nextIndex[i] = len(rf.Log)	// last log index + 1
@@ -187,6 +189,7 @@ func (rf *Raft) leaderHeartbeats(term int) {
 		}
 		// Send out heartbeats
 		if rf.CurrentTerm == term && rf.currentRole == Leader {
+			DPrintf("Raft %d sending heartbeats\n", rf.me)
 			for i := range rf.peers {
 				if i != rf.me {
 					args := &AppendEntriesArgs{			// Heartbeat request:
