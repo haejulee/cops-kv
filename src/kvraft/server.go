@@ -56,99 +56,104 @@ type cmdResults struct {
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	kv.mu.Lock()
-	// If not leader, return WrongLeader
-	if _, isLeader := kv.rf.GetState(); !isLeader {
-		reply.WrongLeader = true
-		kv.mu.Unlock()
-		return
+	setWrongLeader := func() { reply.WrongLeader = true }
+	
+	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
+		lastApplied := kv.lastApplied[args.ClientID]
+		if lastApplied.cmd.CommandID == args.CommandID {
+			reply.WrongLeader = false
+			reply.Err = lastApplied.err
+			reply.Value = lastApplied.value
+			return true
+		} else { return false }
 	}
-	// If lastApplied has the command, return response
-	lastApplied := kv.lastApplied[args.ClientID]
-	if lastApplied.cmd.CommandID == args.CommandID {
-		reply.WrongLeader = false
-		reply.Err = lastApplied.err
-		reply.Value = lastApplied.value
-		kv.mu.Unlock()
-		return
+	
+	createCommand := func() Op {
+		return Op { OpGet, args.Key, "", args.ClientID, args.CommandID }
 	}
-	// Construct command for the Get request
-	var command Op
-	command.Type = OpGet
-	command.Key = args.Key
-	command.ClientID = args.ClientID
-	command.CommandID = args.CommandID
-	// Call rf.Start for the Get request
-	_, term, isLeader := kv.rf.Start(command)
-	if !isLeader {
-		reply.WrongLeader = true
-		kv.mu.Unlock()
-		return
-	}
-	// Read applyCh until 1st occurrence of the request
-	for {
-		// Keep checking if still leader for the same term
-		if curTerm, _ := kv.rf.GetState(); curTerm != term {
-			reply.WrongLeader = true
-			break
-		}
-		// Do a non-blocking read from applyCh
-		committed, ok := kv.readApplyCh()
-		if !ok {
-			continue
-		}
-		if committed.CommandValid {
-			cmd := committed.Command.(Op)
-			// Apply the command
-			kv.apply(cmd)
-			// Check if lastApplied matches the Get request
-			lastApplied = kv.lastApplied[args.ClientID]
-			if lastApplied.cmd.CommandID == args.CommandID {
-				reply.WrongLeader = false
-				reply.Err = lastApplied.err
-				reply.Value = lastApplied.value
-				break
-			}
-		}
-	}
-	kv.mu.Unlock()
+	
+	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	setWrongLeader := func() { reply.WrongLeader = true }
+	
+	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
+		lastApplied := kv.lastApplied[args.ClientID]
+		if lastApplied.cmd.CommandID == args.CommandID {
+			reply.WrongLeader = false
+			reply.Err = lastApplied.err
+			return true
+		} else { return false }
+	}
+	
+	createCommand := func() Op {
+		command := Op { 0, args.Key, args.Value, args.ClientID, args.CommandID }
+		if args.Op == "Put" {
+			command.Type = OpPut
+		} else {
+			command.Type = OpAppend
+		}
+		return command
+	}
+	
+	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
+}
+
+func (kv *KVServer) RegisterClient(args *RegisterClientArgs, reply *RegisterClientReply) {
+	setWrongLeader := func() { reply.ClientID = -1 }
+	
+	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
+		if msg.CommandIndex == index {
+			if msg.CommandValid &&
+			   msg.Command.(Op).Type == OpRegisterClient {
+				reply.ClientID = len(kv.lastApplied) - 1
+			} else {
+				reply.ClientID = -1
+			}
+			return true
+		} else {
+			return false
+		}
+	}
+	
+	createCommand := func() (command Op) {
+		command.Type = OpRegisterClient
+		return
+	}
+	
+	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
+}
+
+
+// Code shared by Get, PutAppend, and RegisterClient RPC handlers
+func (kv *KVServer) RPCHandler(setWrongLeader func(),
+							   lastAppliedMatch func(raft.ApplyMsg, int) bool,
+							   createCommand func() Op) {
 	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	// If not leader, return WrongLeader
 	if _, isLeader := kv.rf.GetState(); !isLeader {
-		reply.WrongLeader = true
-		kv.mu.Unlock()
+		setWrongLeader()
 		return
 	}
 	// If lastApplied has the command, return response
-	lastApplied := kv.lastApplied[args.ClientID]
-	if lastApplied.cmd.CommandID == args.CommandID {
-		reply.WrongLeader = false
-		reply.Err = lastApplied.err
-		kv.mu.Unlock()
+	if (lastAppliedMatch(raft.ApplyMsg{}, -1)) {
 		return
 	}
-	// Construct command for the Put or Append request
-	command := Op { 0, args.Key, args.Value, args.ClientID, args.CommandID }
-	if args.Op == "Put" {
-		command.Type = OpPut
-	} else {
-		command.Type = OpAppend
-	}
-	// Call rf.Start for the Get request
-	_, term, isLeader := kv.rf.Start(command)
+	// Construct Op struct for the received request
+	command := createCommand()
+	// Start consensus for the request
+	index, term, isLeader := kv.rf.Start(command)
 	if !isLeader {
-		reply.WrongLeader = true
-		kv.mu.Unlock()
+		setWrongLeader()
 		return
 	}
 	// Read applyCh until 1st occurrence of the request
 	for {
-		// Keep checking if still leader for the same term
+		// Keep checking if still leader (for the same term)
 		if curTerm, _ := kv.rf.GetState(); curTerm != term {
-			reply.WrongLeader = true
+			setWrongLeader()
 			break
 		}
 		// Do a non-blocking read from applyCh
@@ -156,66 +161,21 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		if !ok {
 			continue
 		}
+		// If a log is read from applyCh:
 		if committed.CommandValid {
 			cmd := committed.Command.(Op)
-			// Apply the command
+			// Apply the command to kvstore
 			kv.apply(cmd)
-			// Check if lastApplied matches the Get request
-			lastApplied = kv.lastApplied[args.ClientID]
-			if lastApplied.cmd.CommandID == args.CommandID {
-				reply.WrongLeader = false
-				reply.Err = lastApplied.err
+			// Check if the applied cmd matches our request
+			if (lastAppliedMatch(committed, index)) {
 				break
 			}
 		}
 	}
-	kv.mu.Unlock()
 }
 
-func (kv *KVServer) RegisterClient(args *RegisterClientArgs, reply *RegisterClientReply) {
-	kv.mu.Lock()
-	// Try to append a RegisterClient command to the log
-	var command Op
-	command.Type = OpRegisterClient
-	index, term, isLeader := kv.rf.Start(command)
-	// If not leader, return WrongLeader
-	if !isLeader {
-		reply.ClientID = -1
-	} else { // Else:
-		// Read from applyCh until RegisterClient operation shows up
-		for {
-			// Keep checking if still leader for the same term
-			if curTerm, _ := kv.rf.GetState(); curTerm != term {
-				reply.ClientID = -1
-				break
-			}
-			// Do a non-blocking read from applyCh
-			committed, ok := kv.readApplyCh()
-			if !ok {
-				continue
-			}
-			// Apply the command
-			if committed.CommandValid {
-				kv.apply(committed.Command.(Op))
-			}
-			// Keep going until the log entry with index is committed
-			if committed.CommandIndex == index {
-				// If the RegisterClient operation successfully committed
-				if committed.CommandValid && 
-				   committed.Command.(Op).Type == OpRegisterClient {
-					// Return the index of the new element of kv.lastApplied
-					reply.ClientID = len(kv.lastApplied) - 1
-				} else { // Else
-					// Return failure
-					reply.ClientID = -1
-				}
-				break
-			}
-		}
-	}
-	kv.mu.Unlock()
-}
 
+// Perform a non-blocking read from applyChannel
 func (kv *KVServer) readApplyCh() (raft.ApplyMsg, bool) {
 	select {
     case applyMsg := <-kv.applyCh:
@@ -225,6 +185,7 @@ func (kv *KVServer) readApplyCh() (raft.ApplyMsg, bool) {
     }
 }
 
+// Apply a committed command to local state
 func (kv *KVServer) apply(op Op) {
 	switch op.Type {
 	case OpRegisterClient:
@@ -251,6 +212,9 @@ func (kv *KVServer) apply(op Op) {
 	}
 }
 
+
+// Read newly committed commands from applyCh and apply them periodically
+// Runs in a separate routine in the background
 func (kv *KVServer) bgReadApplyCh() {
 	var committed raft.ApplyMsg
 	for {
@@ -267,6 +231,7 @@ func (kv *KVServer) bgReadApplyCh() {
 		time.Sleep(time.Duration(100000000))
 	}
 }
+
 
 //
 // the tester calls Kill() when a KVServer instance won't
