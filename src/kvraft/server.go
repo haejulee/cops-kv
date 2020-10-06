@@ -72,6 +72,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 	
 	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
+		// If the client's registration isn't applied to the server yet,
+		// the client's request can't have been applied yet.
+		if len(kv.lastApplied) <= args.ClientID { return false }
+		// If client has been registered, check the last applied cmd for
+		// the client & see if its command ID matches the one of our request
 		lastApplied := kv.lastApplied[args.ClientID]
 		if lastApplied.cmd.CommandID == args.CommandID {
 			reply.WrongLeader = false
@@ -96,6 +101,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 	
 	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
+		if len(kv.lastApplied) <= args.ClientID { return false }
 		lastApplied := kv.lastApplied[args.ClientID]
 		if lastApplied.cmd.CommandID == args.CommandID {
 			reply.WrongLeader = false
@@ -298,6 +304,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	DPrintf("KVServer %d started\n", kv.me)
 
 	// You may need initialization code here.
 	go kv.bgReadApplyCh()
