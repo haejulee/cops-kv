@@ -72,17 +72,16 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 	
 	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
-		// If the client's registration isn't applied to the server yet,
-		// the client's request can't have been applied yet.
-		if len(kv.lastApplied) <= args.ClientID { return false }
-		// If client has been registered, check the last applied cmd for
-		// the client & see if its command ID matches the one of our request
-		lastApplied := kv.lastApplied[args.ClientID]
-		if lastApplied.cmd.CommandID == args.CommandID {
-			reply.WrongLeader = false
-			reply.Err = lastApplied.err
-			reply.Value = lastApplied.value
-			DPrintf("KVServer %d successfully returning Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
+		if msg.CommandIndex == index {
+			lastApplied := kv.lastApplied[args.ClientID]
+			if lastApplied.cmd.CommandID == args.CommandID {
+				reply.WrongLeader = false
+				reply.Err = lastApplied.err
+				reply.Value = lastApplied.value
+				DPrintf("KVServer %d successfully returning Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
+			} else {
+				reply.WrongLeader = true
+			}
 			return true
 		} else { return false }
 	}
@@ -101,7 +100,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 	
 	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
+		// If the client's registration isn't applied to the server yet,
+		// the client's request can't have been applied yet.
 		if len(kv.lastApplied) <= args.ClientID { return false }
+		// If client has been registered, check the last applied cmd for
+		// the client & see if its command ID matches the one of our request
 		lastApplied := kv.lastApplied[args.ClientID]
 		if lastApplied.cmd.CommandID == args.CommandID {
 			reply.WrongLeader = false
@@ -217,13 +220,11 @@ func (kv *KVServer) apply(op Op) {
 	case OpRegisterClient:
 		kv.lastApplied = append(kv.lastApplied, cmdResults{op, "", OK})
 	case OpGet:
-		if kv.lastApplied[op.ClientID].cmd.CommandID != op.CommandID {
-			val, ok := kv.kvstore[op.Key]
-			if ok {
-				kv.lastApplied[op.ClientID] = cmdResults{ op, val, OK }
-			} else {
-				kv.lastApplied[op.ClientID] = cmdResults{ op, "", ErrNoKey }
-			}
+		val, ok := kv.kvstore[op.Key]
+		if ok {
+			kv.lastApplied[op.ClientID] = cmdResults{ op, val, OK }
+		} else {
+			kv.lastApplied[op.ClientID] = cmdResults{ op, "", ErrNoKey }
 		}
 	case OpPut:
 		if kv.lastApplied[op.ClientID].cmd.CommandID != op.CommandID {
