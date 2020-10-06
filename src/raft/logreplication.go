@@ -7,6 +7,11 @@ import (
 func (rf *Raft) leaderLogReplication(term int) {
 	for true {
 		rf.mu.Lock()
+		// If rf is killed, return
+		if rf.stillAlive == false {
+			rf.mu.Unlock()
+			return
+		}
 		// Continue while rf is leader & on the same term
 		if rf.currentRole != Leader || rf.CurrentTerm != term {
 			rf.mu.Unlock()
@@ -54,9 +59,10 @@ func (rf *Raft) replicateLog(i int, args *AppendEntriesArgs) {
 	var reply AppendEntriesReply
 	// Send AppendEntries RPC until a response is received
 	for ok := false ; !ok ; time.Sleep(time.Duration(heartbeatPeriod/2)) {
+		// Send appendEntries
 		ok = rf.sendAppendEntries(i, args, &reply)
+		rf.mu.Lock()
 		if ok {
-			rf.mu.Lock()
 			if reply.Term > args.Term {
 				// If term is greater than currentTerm, update currentTerm
 				// & revert to follower
@@ -71,7 +77,17 @@ func (rf *Raft) replicateLog(i int, args *AppendEntriesArgs) {
 				// Else if success returned false, decrement rf.nextIndex[i]
 				rf.nextIndex[i] = reply.ConflictIndex
 			}
-			rf.mu.Unlock()
 		}
+		// If rf no longer alive, return
+		if rf.stillAlive == false {
+			rf.mu.Unlock()
+			return
+		}
+		// Stop trying if no longer leader for the same term
+		if rf.currentRole != Leader || rf.CurrentTerm != args.Term {
+			rf.mu.Unlock()
+			return
+		}
+		rf.mu.Unlock()
 	}
 }

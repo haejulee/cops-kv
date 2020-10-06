@@ -37,6 +37,9 @@ type Raft struct {
 	// Volatile state on leaders
 	nextIndex	[]int			// Index of next log entry to send to each server
 	matchIndex	[]int			// Index of highest log entry known to be replicated (increases monotonically)
+
+	// Boolean for independent goroutines to check & terminate if Raft instance has been killed
+	stillAlive	bool
 }
 
 type timeoutCanceledBool struct {

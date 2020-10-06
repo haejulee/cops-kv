@@ -37,6 +37,10 @@ func (rf *Raft) resetTimeout() {
 func (rf *Raft) electionTimeoutChecker() {
 	for {
 		rf.mu.Lock()
+		if rf.stillAlive == false { // Terminate if raft instance is killed
+			rf.mu.Unlock()
+			return
+		}
 		if rf.timeoutActive &&
 		   time.Since(rf.lastTimeoutReset) > rf.electionTimeout {
 			rf.leaderElection()
@@ -89,9 +93,14 @@ func (rf *Raft) requestVotes(args *RequestVoteArgs) {
 			break
 		}
 		ctr.mu.Unlock()
+		rf.mu.Lock()
+		// If rf has been killed, return
+		if rf.stillAlive == false {
+			rf.mu.Unlock()
+			return
+		}
 		// If rf is past this election's term, return
 		// If rf isn't a candidate anymore, also return
-		rf.mu.Lock()
 		if rf.CurrentTerm > args.Term || rf.currentRole != Candidate {
 			rf.mu.Unlock()
 			return
@@ -137,8 +146,13 @@ func (rf *Raft) requestVote(i int, args *RequestVoteArgs, ctr *voteCounter) {
 	var reply RequestVoteReply
 	// Send request to peer until you get a response
 	for ok := false; !ok ; time.Sleep(time.Duration(heartbeatPeriod)) {
-		// If rf is past this election's term, or if rf is no longer candidate
 		rf.mu.Lock()
+		// If rf is no longer alive, return
+		if rf.stillAlive == false {
+			rf.mu.Unlock()
+			return
+		}
+		// If rf is past this election's term, or if rf is no longer candidate
 		if rf.CurrentTerm != args.Term || rf.currentRole != Candidate {
 			rf.mu.Unlock()
 			return
@@ -165,8 +179,13 @@ func (rf *Raft) requestVote(i int, args *RequestVoteArgs, ctr *voteCounter) {
 // Runs if rf wins a majority vote & becomes leader.
 func (rf *Raft) leaderHeartbeats(term int) {
 	for true {
-		// Send out heartbeats
 		rf.mu.Lock()
+		// If rf no longer alive, return
+		if rf.stillAlive == false {
+			rf.mu.Unlock()
+			return
+		}
+		// Send out heartbeats
 		if rf.CurrentTerm == term && rf.currentRole == Leader {
 			for i := range rf.peers {
 				if i != rf.me {
