@@ -211,22 +211,28 @@ func (kv *KVServer) apply(op Op) {
 	case OpRegisterClient:
 		kv.lastApplied = append(kv.lastApplied, cmdResults{op, "", OK})
 	case OpGet:
-		val, ok := kv.kvstore[op.Key]
-		if ok {
-			kv.lastApplied[op.ClientID] = cmdResults{ op, val, OK }
-		} else {
-			kv.lastApplied[op.ClientID] = cmdResults{ op, "", ErrNoKey }
+		if kv.lastApplied[op.ClientID].cmd.CommandID != op.CommandID {
+			val, ok := kv.kvstore[op.Key]
+			if ok {
+				kv.lastApplied[op.ClientID] = cmdResults{ op, val, OK }
+			} else {
+				kv.lastApplied[op.ClientID] = cmdResults{ op, "", ErrNoKey }
+			}
 		}
 	case OpPut:
-		kv.kvstore[op.Key] = op.Value
-		kv.lastApplied[op.ClientID] = cmdResults{ op, "", OK }
-	case OpAppend:
-		val, ok := kv.kvstore[op.Key]
-		if ok {
-			kv.kvstore[op.Key] = val + op.Value
+		if kv.lastApplied[op.ClientID].cmd.CommandID != op.CommandID {
+			kv.kvstore[op.Key] = op.Value
 			kv.lastApplied[op.ClientID] = cmdResults{ op, "", OK }
-		} else {
-			kv.lastApplied[op.ClientID] = cmdResults{ op, "", ErrNoKey }
+		}
+	case OpAppend:
+		if kv.lastApplied[op.ClientID].cmd.CommandID != op.CommandID {
+			val, ok := kv.kvstore[op.Key]
+			if ok {
+				kv.kvstore[op.Key] = val + op.Value
+				kv.lastApplied[op.ClientID] = cmdResults{ op, "", OK }
+			} else {
+				kv.lastApplied[op.ClientID] = cmdResults{ op, "", ErrNoKey }
+			}
 		}
 	default:
 	}
