@@ -148,8 +148,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// Start background routine that will start election after timeout
-	rf.startNewTimeout()
+	// Start background routine that will start elections after timeout
+	rf.resetTimeout()
+	go rf.electionTimeoutChecker()
 
 	// Start background routine that will apply commands as they're committed
 	go rf.applyCommands(applyCh)

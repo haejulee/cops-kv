@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"time"
 	"sync"
 
 	"labrpc"
@@ -13,13 +14,15 @@ type Raft struct {
 	// Mutex lock
 	mu			sync.Mutex			// Lock to protect shared access to this peer's state
 	
-	// State that never gets modified past startup (no lock required to access)
+	// State that never gets modified past startup
 	peers		[]*labrpc.ClientEnd	// RPC end points of all peers
 	persister	*Persister			// Object to hold this peer's persisted state
 	me			int					// this peer's index into peers[]
 	
-	// Election timeout "cancel button"
-	timeoutCanceled	*timeoutCanceledBool // Struct shared with most recent timeout goroutine
+	// State for timeout checking
+	lastTimeoutReset time.Time		// Last time election timeout was reset
+	electionTimeout  time.Duration	// Duration of current election timeout
+	timeoutActive    bool			// Whether or not the election timeout is active
 
 	// Persistent state on all servers
 	CurrentTerm	int				// Latest term server has seen (increases monotonically)

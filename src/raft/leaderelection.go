@@ -15,6 +15,7 @@ const (
 	minElectionTimeout int64 =  500000000	// 0.5 sec
 	maxElectionTimeout int64 = 1000000000	// 1.0 sec
 	heartbeatPeriod    int64 =  100000000	// 0.1 sec
+	timeoutCheckPeriod int64 =   10000000	// 0.01 sec
 )
 
 func randomizedElectionTimeout() time.Duration {
@@ -22,33 +23,30 @@ func randomizedElectionTimeout() time.Duration {
 	return time.Duration(duration)
 }
 
-func (rf *Raft) resetTimeout() {
-	rf.cancelTimeout()
-	rf.startNewTimeout()
-}
-
 func (rf *Raft) cancelTimeout() {
-	rf.timeoutCanceled.isCanceled = true
+	rf.timeoutActive = false
 }
 
-func (rf *Raft) startNewTimeout() {
-	newTimeoutBool := &timeoutCanceledBool{false}
-	rf.timeoutCanceled = newTimeoutBool
-	go rf.electionTimeout(newTimeoutBool)
+func (rf *Raft) resetTimeout() {
+	rf.electionTimeout = randomizedElectionTimeout()
+	rf.lastTimeoutReset = time.Now()
+	rf.timeoutActive = true
 }
 
-func (rf *Raft) electionTimeout(tc *timeoutCanceledBool) {
-	// Sleep for random election timeout time
-	time.Sleep(randomizedElectionTimeout())
-	rf.mu.Lock()
-	// If after timeout time, timeout hasn't been canceled & rf isn't
-	// already a leader, start a new election
-	if !tc.isCanceled && rf.currentRole != Leader {
-		rf.leaderElection()
+// Background procedure for starting new elections when election timeout is due
+func (rf *Raft) electionTimeoutChecker() {
+	for {
+		rf.mu.Lock()
+		if rf.timeoutActive &&
+		   time.Since(rf.lastTimeoutReset) > rf.electionTimeout {
+			rf.leaderElection()
+		}
+		rf.mu.Unlock()
+		time.Sleep(time.Duration(timeoutCheckPeriod))
 	}
-	rf.mu.Unlock()
 }
 
+// Subroutine of electionTimeoutChecker, runs when election timeout is due
 func (rf *Raft) leaderElection() {
 	// Start new term as candidate
 	rf.CurrentTerm += 1
@@ -65,13 +63,13 @@ func (rf *Raft) leaderElection() {
 		rf.Log[len(rf.Log)-1].Term,	// Term of candidate's last log entry
 	}
 	// Set new election timeout
-	rf.startNewTimeout()
+	rf.resetTimeout()
 	// Send out RequestVotes RPCs
-	rf.mu.Unlock()
-	rf.requestVotes(args)
-	rf.mu.Lock()
+	go rf.requestVotes(args)
 }
 
+// Independent procedure for starting & processing a new election,
+// triggered by leaderElection in electionTimeoutChecker
 func (rf *Raft) requestVotes(args *RequestVoteArgs) {
 	// Initialize vote counter
 	ctr := &voteCounter{}
@@ -134,6 +132,7 @@ type voteCounter struct {
 	mu				sync.Mutex	// Must be acquired before modifying votedFor
 }
 
+// Procedure for sending RequestVote RPC to a single peer
 func (rf *Raft) requestVote(i int, args *RequestVoteArgs, ctr *voteCounter) {
 	var reply RequestVoteReply
 	// Send request to peer until you get a response
@@ -162,6 +161,8 @@ func (rf *Raft) requestVote(i int, args *RequestVoteArgs, ctr *voteCounter) {
 	}
 }
 
+// Subroutine of requestVotes,
+// Runs if rf wins a majority vote & becomes leader.
 func (rf *Raft) leaderHeartbeats(term int) {
 	for true {
 		// Send out heartbeats
@@ -191,6 +192,7 @@ func (rf *Raft) leaderHeartbeats(term int) {
 	}
 }
 
+// Procedure for sending a heartbeat to a single peer
 func (rf *Raft) sendHeartbeat(i int, args *AppendEntriesArgs) {
 	var reply AppendEntriesReply
 	ok := rf.sendAppendEntries(i, args, &reply)
@@ -208,6 +210,7 @@ func (rf *Raft) sendHeartbeat(i int, args *AppendEntriesArgs) {
 	}
 }
 
+// Used by sendHeartbeat & requestVote calls
 func (rf *Raft) updateTerm(newTerm int) {
 	// If newly received term is higher than current term, update current term
 	if newTerm > rf.CurrentTerm {
