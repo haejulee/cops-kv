@@ -51,16 +51,18 @@ func (rf *Raft) electionTimeout(tc *timeoutCanceledBool) {
 
 func (rf *Raft) leaderElection() {
 	// Start new term as candidate
-	rf.currentTerm += 1
+	rf.CurrentTerm += 1
 	rf.currentRole = Candidate
 	// Vote for self
-	rf.votedFor = rf.me
+	rf.VotedFor = rf.me
+	// Persist changes made to current term & voted for
+	rf.persist()
 	// Create RequestVote args
 	args := &RequestVoteArgs{
-		rf.currentTerm,				// Candidate's term
+		rf.CurrentTerm,				// Candidate's term
 		rf.me,						// Candidate's ID
-		len(rf.log)-1,				// Index of candidate's last log entry
-		rf.log[len(rf.log)-1].Term,	// Term of candidate's last log entry
+		len(rf.Log)-1,				// Index of candidate's last log entry
+		rf.Log[len(rf.Log)-1].Term,	// Term of candidate's last log entry
 	}
 	// Set new election timeout
 	rf.startNewTimeout()
@@ -92,7 +94,7 @@ func (rf *Raft) requestVotes(args *RequestVoteArgs) {
 		// If rf is past this election's term, return
 		// If rf isn't a candidate anymore, also return
 		rf.mu.Lock()
-		if rf.currentTerm > args.Term || rf.currentRole != Candidate {
+		if rf.CurrentTerm > args.Term || rf.currentRole != Candidate {
 			rf.mu.Unlock()
 			return
 		}
@@ -104,18 +106,18 @@ func (rf *Raft) requestVotes(args *RequestVoteArgs) {
 	rf.mu.Lock()
 	// While holding lock, make sure again that the election won hasn't passed
 	// its term.
-	if rf.currentTerm == args.Term {
+	if rf.CurrentTerm == args.Term {
 		// Cancel election timeout to start term as leader
 		rf.cancelTimeout()
 		// Become leader
 		rf.currentRole = Leader
 		for i := range rf.peers {
 			// Initialize leader volatile state
-			rf.nextIndex[i] = len(rf.log)	// last log index + 1
+			rf.nextIndex[i] = len(rf.Log)	// last log index + 1
 			rf.matchIndex[i] = 0
 		}
 		// Save the term for which rf became leader
-		leaderTerm := rf.currentTerm
+		leaderTerm := rf.CurrentTerm
 		// Start log replication on leader
 		go rf.leaderLogReplication(leaderTerm)
 		// Let go of lock
@@ -138,7 +140,7 @@ func (rf *Raft) requestVote(i int, args *RequestVoteArgs, ctr *voteCounter) {
 	for ok := false; !ok ; time.Sleep(time.Duration(heartbeatPeriod)) {
 		// If rf is past this election's term, or if rf is no longer candidate
 		rf.mu.Lock()
-		if rf.currentTerm != args.Term || rf.currentRole != Candidate {
+		if rf.CurrentTerm != args.Term || rf.currentRole != Candidate {
 			rf.mu.Unlock()
 			return
 		}
@@ -164,14 +166,14 @@ func (rf *Raft) leaderHeartbeats(term int) {
 	for true {
 		// Send out heartbeats
 		rf.mu.Lock()
-		if rf.currentTerm == term && rf.currentRole == Leader {
+		if rf.CurrentTerm == term && rf.currentRole == Leader {
 			for i := range rf.peers {
 				if i != rf.me {
 					args := &AppendEntriesArgs{			// Heartbeat request:
-						rf.currentTerm,					// Leader term
+						rf.CurrentTerm,					// Leader term
 						rf.me,							// Leader ID
 						rf.nextIndex[i]-1,				// prev log index
-						rf.log[rf.nextIndex[i]-1].Term,	// prev log term
+						rf.Log[rf.nextIndex[i]-1].Term,	// prev log term
 						rf.commitIndex,					// Leader's commitIndex
 						[]logEntry{},					// No log entries
 					}
@@ -208,11 +210,13 @@ func (rf *Raft) sendHeartbeat(i int, args *AppendEntriesArgs) {
 
 func (rf *Raft) updateTerm(newTerm int) {
 	// If newly received term is higher than current term, update current term
-	if newTerm > rf.currentTerm {
+	if newTerm > rf.CurrentTerm {
 		// Initialize as a new follower in the new term
-		rf.currentTerm = newTerm
+		rf.CurrentTerm = newTerm
 		rf.currentRole = Follower
-		rf.votedFor = -1
+		rf.VotedFor = -1
+		// Persist changes made to current term & voted for
+		rf.persist()
 		// Reset (or start new, if leader) election timeout
 		rf.resetTimeout()
 	}

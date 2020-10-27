@@ -15,34 +15,35 @@ type RequestVoteReply struct {
 // RequestVote RPC handler
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.CurrentTerm {
 		// If candidate's term < currentTerm, return false
-		reply.Term = rf.currentTerm
+		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
 	} else {
-		if args.Term > rf.currentTerm {
+		if args.Term > rf.CurrentTerm {
 			// If candidate's term > currentTerm:
 			// become follower, update currentTerm, and reset votedFor
 			rf.currentRole = Follower
-			rf.currentTerm = args.Term
-			rf.votedFor = -1
+			rf.CurrentTerm = args.Term
+			rf.VotedFor = -1
 		}
 		// Grant vote only if server hasn't voted yet and candidate's log is
 		// at least as up-to-date as server's
-		reply.Term = rf.currentTerm
+		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
-		lastLogTerm := rf.log[len(rf.log)-1].Term
-		if rf.votedFor == -1 &&
+		lastLogTerm := rf.Log[len(rf.Log)-1].Term
+		if rf.VotedFor == -1 &&
 			(args.LastLogTerm > lastLogTerm ||
 			(args.LastLogTerm == lastLogTerm &&
-			args.LastLogIndex >= len(rf.log)-1)) {
+			args.LastLogIndex >= len(rf.Log)-1)) {
 			// Grant vote
-			rf.votedFor = args.CandidateID
+			rf.VotedFor = args.CandidateID
 			reply.VoteGranted = true
 			// Reset timeout
 			rf.resetTimeout()
 		}
 	}
+	rf.persist()	// Persist changes made in this function
 	rf.mu.Unlock()
 }
 

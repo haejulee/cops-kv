@@ -22,9 +22,9 @@ type Raft struct {
 	timeoutCanceled	*timeoutCanceledBool // Struct shared with most recent timeout goroutine
 
 	// Persistent state on all servers
-	currentTerm	int				// Latest term server has seen (increases monotonically)
-	votedFor	int				// ID of candidate that received server's vote in current term
-	log			[]logEntry		// Log (log entries)
+	CurrentTerm	int				// Latest term server has seen (increases monotonically)
+	VotedFor	int				// ID of candidate that received server's vote in current term
+	Log			[]logEntry		// Log (log entries)
 
 	// Volatile state on all servers
 	commitIndex	int				// Index of highest known committed entry (increases monotonically)

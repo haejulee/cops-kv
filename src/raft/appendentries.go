@@ -17,20 +17,20 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.CurrentTerm {
 		// If term is less than currentTerm, return false
-		reply.Term = rf.currentTerm
+		reply.Term = rf.CurrentTerm
 		reply.Success = false
-	} else if len(rf.log) <= args.PrevLogIndex ||
-		rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	} else if len(rf.Log) <= args.PrevLogIndex ||
+		rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		// If log doesn't contain entry at prevLogIndex whose term == prevLogTerm
 		// Find index of first element with the conflicting term
-		if len(rf.log) <= args.PrevLogIndex {
-			reply.ConflictIndex = len(rf.log)
+		if len(rf.Log) <= args.PrevLogIndex {
+			reply.ConflictIndex = len(rf.Log)
 		} else {
-			term := rf.log[args.PrevLogIndex].Term
+			term := rf.Log[args.PrevLogIndex].Term
 			for i:=args.PrevLogIndex; i>=0; i-- {
-				if rf.log[i].Term != term {
+				if rf.Log[i].Term != term {
 					reply.ConflictIndex = i + 1
 					break
 				}
@@ -39,27 +39,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// Reset election timeout
 		rf.resetTimeout()
 		// Return false
-		reply.Term = rf.currentTerm
+		reply.Term = rf.CurrentTerm
 		reply.Success = false
 	} else {
 		// Append any new entries not already in the log
-		rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
-		// If term > rf.currentTerm, update currentTerm
-		if args.Term > rf.currentTerm {
-			rf.currentTerm = args.Term
+		rf.Log = append(rf.Log[:args.PrevLogIndex+1], args.Entries...)
+		// If term > rf.CurrentTerm, update currentTerm
+		if args.Term > rf.CurrentTerm {
+			rf.CurrentTerm = args.Term
 			rf.currentRole = Follower
-			rf.votedFor = -1
+			rf.VotedFor = -1
 		}
+		rf.persist()	// Persist changes made in lines 46-51
 		// Update commit index
-		if args.LeaderCommit >= len(rf.log) {
-			rf.commitIndex = len(rf.log)-1
+		if args.LeaderCommit >= len(rf.Log) {
+			rf.commitIndex = len(rf.Log)-1
 		} else {
 			rf.commitIndex = args.LeaderCommit
 		}
 		// Reset election timeout
 		rf.resetTimeout()
 		// Return true
-		reply.Term = rf.currentTerm
+		reply.Term = rf.CurrentTerm
 		reply.Success = true
 	}
 	rf.mu.Unlock()
