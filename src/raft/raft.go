@@ -108,6 +108,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	rf.mu.Lock()
 	rf.cancelTimeout()
+	rf.stillAlive = false
 	rf.mu.Unlock()
 }
 
@@ -128,6 +129,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.stillAlive = true
 
 	// Initialize persistent state
 	rf.CurrentTerm = 0			// Start at term 0
@@ -148,8 +150,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// Start background routine that will start election after timeout
-	rf.startNewTimeout()
+	// Start background routine that will start elections after timeout
+	rf.resetTimeout()
+	go rf.electionTimeoutChecker()
 
 	// Start background routine that will apply commands as they're committed
 	go rf.applyCommands(applyCh)
@@ -160,6 +163,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 func (rf *Raft) applyCommands(applyCh chan ApplyMsg) {
 	for true {
 		rf.mu.Lock()
+		if rf.stillAlive == false {
+			rf.mu.Unlock()
+			return
+		}
 		var i int
 		for rf.lastApplied < rf.commitIndex {
 			i = rf.lastApplied + 1
