@@ -2,6 +2,7 @@ package raft
 
 import (
 	"labrpc"
+	"time"
 )
 
 // return currentTerm and whether this server
@@ -67,14 +68,21 @@ func (rf *Raft) readPersist(data []byte) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
-	// Your code here (2B).
-
-
-	return index, term, isLeader
+	rf.mu.Lock()
+	// If rf isn't leader, return false
+	if rf.currentRole != Leader {
+		rf.mu.Unlock()
+		return 0, 0, false
+	}
+	// Get next index & current term
+	index := len(rf.log)
+	term := rf.currentTerm
+	// Create log entry for command
+	entry := logEntry{term, command}
+	// Append new log entry to log
+	rf.log = append(rf.log, entry)
+	rf.mu.Unlock()
+	return index, term, true
 }
 
 //
@@ -129,5 +137,23 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Start background routine that will start election after timeout
 	rf.startNewTimeout()
 
+	// Start background routine that will apply commands as they're committed
+	go rf.applyCommands(applyCh)
+
 	return rf
+}
+
+func (rf *Raft) applyCommands(applyCh chan ApplyMsg) {
+	for true {
+		rf.mu.Lock()
+		var i int
+		for rf.lastApplied < rf.commitIndex {
+			i = rf.lastApplied + 1
+			msg := ApplyMsg{true, rf.log[i].Command, i}
+			applyCh <- msg
+			rf.lastApplied = i
+		}
+		rf.mu.Unlock()
+		time.Sleep(time.Duration(heartbeatPeriod))
+	}
 }
