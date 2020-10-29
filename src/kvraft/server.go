@@ -274,7 +274,6 @@ func (kv *KVServer) bgReadApplyCh() {
 //
 func (kv *KVServer) Kill() {
 	kv.rf.Kill()
-	// Your code here, if desired.
 }
 
 //
