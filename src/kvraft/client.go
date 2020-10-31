@@ -8,7 +8,7 @@ import "math/big"
 type Clerk struct {
 	servers			[]*labrpc.ClientEnd
 	lastLeader		int
-	clientID		int
+	clientID		int64
 	nextCommandID	uint8
 }
 
@@ -25,7 +25,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	// Save servers to Clerk struct
 	ck.servers = servers
 	// Initialize clientID & nextCommandID
-	ck.clientID = -1
+	ck.clientID = nrand()
 	ck.nextCommandID = 1
 	// Return the Clerk struct
 	DPrintf("Made a clerk!\n")
@@ -49,12 +49,6 @@ func (ck *Clerk) randomServer() int {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-	// If haven't received a client ID, obtain one first
-	if ck.clientID < 0 {
-		DPrintf("Requesting Client ID...\n")
-		ck.clientID = ck.registerClient()
-		DPrintf("Client ID %d\n", ck.clientID)
-	}
 	// Initialize arguments & reply struct
 	args := GetArgs { key, ck.clientID, ck.nextCommandID }
 	DPrintf("Client %d requesting Get %d\n", args.ClientID, args.CommandID)
@@ -101,12 +95,6 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// If haven't received a client ID, obtain one first
-	if ck.clientID < 0 {
-		DPrintf("Requesting Client ID...\n")
-		ck.clientID = ck.registerClient()
-		DPrintf("Client ID %d\n", ck.clientID)
-	}
 	// Initialize arguments & reply struct
 	args := PutAppendArgs { key, value, op, ck.clientID, ck.nextCommandID }
 	DPrintf("Client %d requesting PutAppend %d\n", args.ClientID, args.CommandID)
@@ -138,20 +126,4 @@ func (ck *Clerk) Put(key string, value string) {
 }
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
-}
-
-func (ck *Clerk) registerClient() int {
-	ok := false
-	var args RegisterClientArgs
-	var reply RegisterClientReply
-	var i int
-	for !ok {
-		i = ck.randomServer()
-		ok = ck.servers[i].Call("KVServer.RegisterClient", &args, &reply)
-		if ok && reply.ClientID < 0 {
-			ok = false
-		}
-	}
-	ck.lastLeader = i
-	return reply.ClientID
 }

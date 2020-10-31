@@ -12,7 +12,7 @@ type PutAppendArgs struct {
 	Key       string
 	Value     string
 	Op        string // "Put" or "Append"
-	ClientID  int
+	ClientID  int64
 	CommandID uint8
 }
 
@@ -23,7 +23,7 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key string
-	ClientID  int
+	ClientID  int64
 	CommandID uint8
 }
 
@@ -31,10 +31,4 @@ type GetReply struct {
 	WrongLeader bool
 	Err         Err
 	Value       string
-}
-
-type RegisterClientArgs struct {}
-
-type RegisterClientReply struct {
-	ClientID	int
 }
