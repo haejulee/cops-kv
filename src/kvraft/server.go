@@ -78,17 +78,18 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.WrongLeader = true
 	}
 	
-	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
-		if msg.CommandIndex == index {
-			lastApplied := kv.lastApplied[args.ClientID]
-			if lastApplied.Cmd.CommandID == args.CommandID {
-				reply.WrongLeader = false
-				reply.Err = lastApplied.Err
-				reply.Value = lastApplied.Value
-				DPrintf("KVServer %d successfully returning Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
-			} else {
-				reply.WrongLeader = true
-			}
+	lastAppliedMatch := func() bool {
+		// If the client's registration isn't applied to the server yet,
+		// the client's request can't have been applied yet.
+		if len(kv.lastApplied) <= args.ClientID { return false }
+		// If client has been registered, check the last applied cmd for
+		// the client & see if its command ID matches the one of our request
+		lastApplied := kv.lastApplied[args.ClientID]
+		if lastApplied.Cmd.CommandID == args.CommandID {
+			reply.WrongLeader = false
+			reply.Err = lastApplied.Err
+			reply.Value = lastApplied.Value
+			DPrintf("KVServer %d successfully returning Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
 			return true
 		} else { return false }
 	}
@@ -106,7 +107,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.WrongLeader = true
 	}
 	
-	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
+	lastAppliedMatch := func() bool {
 		// If the client's registration isn't applied to the server yet,
 		// the client's request can't have been applied yet.
 		if len(kv.lastApplied) <= args.ClientID { return false }
@@ -158,12 +159,53 @@ func (kv *KVServer) RegisterClient(args *RegisterClientArgs, reply *RegisterClie
 		return
 	}
 	
-	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
+	kv.RPCHandler2(setWrongLeader, lastAppliedMatch, createCommand)
 }
 
 
-// Code shared by Get, PutAppend, and RegisterClient RPC handlers
+// Code shared by Get and PutAppend RPC handlers
 func (kv *KVServer) RPCHandler(setWrongLeader func(),
+							   lastAppliedMatch func() bool,
+							   createCommand func() Op) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	// If not leader, return WrongLeader
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		setWrongLeader()
+		return
+	}
+	// If lastApplied has the command, return response
+	if (lastAppliedMatch()) {
+		return
+	}
+	// Construct Op struct for the received request
+	command := createCommand()
+	// Start consensus for the request
+	_, term, isLeader := kv.rf.Start(command)
+	if !isLeader {
+		setWrongLeader()
+		return
+	}
+	// Read applyCh until 1st occurrence of the request
+	for {
+		// Keep checking if still leader (for the same term)
+		if curTerm, _ := kv.rf.GetState(); curTerm != term {
+			setWrongLeader()
+			break
+		}
+		// Yield lock to let background routine apply commands
+		kv.mu.Unlock()
+		time.Sleep(time.Duration(1000000))
+		kv.mu.Lock()
+		// If matching command applied, return
+		if (lastAppliedMatch()) {
+			break
+		}
+	}
+}
+
+// Code used by RegisterClient RPC handler
+func (kv *KVServer) RPCHandler2(setWrongLeader func(),
 							   lastAppliedMatch func(raft.ApplyMsg, int) bool,
 							   createCommand func() Op) {
 	kv.mu.Lock()
@@ -286,7 +328,7 @@ func (kv *KVServer) bgReadApplyCh() {
 			}
 		}
 		kv.mu.Unlock()
-		time.Sleep(time.Duration(100000000))
+		time.Sleep(time.Duration(500000))
 	}
 }
 
