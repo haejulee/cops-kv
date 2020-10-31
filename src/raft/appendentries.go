@@ -27,14 +27,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Pre-calculate current highest log index & the term corresponding to prevlogindex
 	highestLogIndex := rf.highestLogIndex()
 	prevLogTerm := 0
-	if highestLogIndex >= args.PrevLogIndex {
+	if len(args.Entries) > 0 && highestLogIndex >= args.PrevLogIndex {
 		if args.PrevLogIndex == rf.SnapshotIndex {
 			prevLogTerm = rf.SnapshotTerm
 		} else {
 			prevLogTerm = rf.logEntry(args.PrevLogIndex).Term
 		}
 	}
-	if highestLogIndex < args.PrevLogIndex || prevLogTerm != args.PrevLogTerm {
+	if len(args.Entries) > 0 &&
+	   (highestLogIndex < args.PrevLogIndex || prevLogTerm != args.PrevLogTerm) {
 		// If log doesn't contain entry at prevLogIndex whose term == prevLogTerm
 		// return index of first element with the conflicting term
 		if highestLogIndex < args.PrevLogIndex {
@@ -56,16 +57,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
 	} else {
+		changesMade := false
 		// If the conditions are right for appending the entries:
-		// Append any new entries not already in the log
-		rf.Log = append(rf.logSlice(-1,args.PrevLogIndex), args.Entries...)
+		if len(args.Entries) > 0 {
+			// Append any new entries not already in the log
+			rf.Log = append(rf.logSlice(-1,args.PrevLogIndex), args.Entries...)
+			changesMade = true
+		}
 		// If term > rf.CurrentTerm, update currentTerm
 		if args.Term > rf.CurrentTerm {
 			rf.CurrentTerm = args.Term
 			rf.currentRole = Follower
 			rf.VotedFor = -1
+			changesMade = true
 		}
-		rf.persist()	// Persist changes made in lines 46-51
+		// Save any changes made to persistent data
+		if changesMade {
+			rf.persist()
+		}
 		// Update commit index
 		highestLogIndex = rf.highestLogIndex()
 		if args.LeaderCommit > highestLogIndex {
