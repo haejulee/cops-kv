@@ -67,7 +67,7 @@ func (ck *Clerk) Get(key string) string {
 		ok = ck.servers[i].Call("KVServer.Get", &args, &reply)
 		// If RPC succeeded:
 		if ok {
-			DPrintf("%d-%d reply: WrongLeader=%d, Value=%s %p\n", args.ClientID, args.CommandID, reply.WrongLeader, reply.Value, &reply)
+			DPrintf("%d-%d reply: WrongLeader=%t, Value=%s %p\n", args.ClientID, args.CommandID, reply.WrongLeader, reply.Value, &reply)
 			if reply.WrongLeader == true {
 				DPrintf("Client %d received WrongLeader for %d\n", args.ClientID, args.CommandID)
 				// If wrong leader, set ok = false
