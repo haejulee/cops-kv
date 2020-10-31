@@ -256,6 +256,7 @@ func (kv *KVServer) apply(op Op) {
 }
 
 func (kv *KVServer) applySnapshot(snapshot KVSnapshot) {
+	kv.lastApplied = snapshot.LastApplied
 	kv.kvstore = snapshot.KVStore
 	kv.lastAppliedIndex = snapshot.LastAppliedIndex
 }
@@ -341,7 +342,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv := new(KVServer)
 	kv.me = me
-	kv.maxraftstate = 1 // maxraftstate
+	kv.maxraftstate = maxraftstate
 	kv.lastAppliedIndex = 0
 	kv.kvstore = make(map[string]string)
 
