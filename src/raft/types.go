@@ -28,6 +28,8 @@ type Raft struct {
 	CurrentTerm	int				// Latest term server has seen (increases monotonically)
 	VotedFor	int				// ID of candidate that received server's vote in current term
 	Log			[]logEntry		// Log (log entries)
+	SnapshotIndex int			// Last included index of snapshot
+	SnapshotTerm int			// Term of last log entry included in snapshot
 
 	// Volatile state on all servers
 	commitIndex	int				// Index of highest known committed entry (increases monotonically)

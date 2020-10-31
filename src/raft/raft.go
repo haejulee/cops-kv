@@ -137,6 +137,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.Log = []logEntry{		// Initialize log with dummy entry at index 0
 		logEntry{0,nil},		// (first log entry index is 1)
 	}
+	rf.SnapshotIndex = 0		// Start at dummy index 0
+	rf.SnapshotTerm = 0			// Start at dummy term 0
 
 	// Initialize volatile state
 	rf.commitIndex = 0			// Start at commitIndex 0
