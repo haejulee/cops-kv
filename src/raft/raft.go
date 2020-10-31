@@ -25,7 +25,7 @@ func (rf *Raft) logEntry(index int) *logEntry {
 		return &logEntry{0,nil}
 	}
 	if index < 0 {
-		log.Printf("Index %d\n", index)
+		DPrintf("Index %d\n", index)
 	}
 	return &(rf.Log[index - 1])
 }
@@ -46,21 +46,27 @@ func (rf *Raft) logSlice(startIndex, endIndex int) []logEntry {
 	}
 }
 
+func (rf *Raft) encodePersistentState() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.CurrentTerm)
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.SnapshotIndex)
+	e.Encode(rf.SnapshotTerm)
+	e.Encode(len(rf.Log))
+	for i := range rf.Log {
+		e.Encode(rf.Log[i])
+	}
+	return w.Bytes()
+}
+
 //
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	e.Encode(rf.CurrentTerm)
-	e.Encode(rf.VotedFor)
-	e.Encode(len(rf.Log))
-	for i := range rf.Log {
-		e.Encode(rf.Log[i])
-	}
-	data := w.Bytes()
+	data := rf.encodePersistentState()
 	rf.persister.SaveRaftState(data)
 }
 
@@ -73,14 +79,18 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	var CurrentTerm, VotedFor, nLogs int
+	var CurrentTerm, VotedFor, nLogs, SnapshotIndex, SnapshotTerm int
 	if d.Decode(&CurrentTerm) != nil ||
 		d.Decode(&VotedFor) != nil ||
+		d.Decode(&SnapshotIndex) != nil ||
+		d.Decode(&SnapshotTerm) != nil ||
 		d.Decode(&nLogs) != nil {
 		log.Fatal("failed to decode persistent state")
 	}
 	rf.CurrentTerm = CurrentTerm
 	rf.VotedFor = VotedFor
+	rf.SnapshotIndex = SnapshotIndex
+	rf.SnapshotTerm = SnapshotTerm
 	rf.Log = make([]logEntry, nLogs)
 	for i:=0; i<nLogs; i++ {
 		var entry logEntry
@@ -176,6 +186,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	// Recover snapshot from persistent state if applicable
+	snapshot, ok := rf.readSnapshot()
+	if ok {
+		applyCh <- ApplyMsg{ false, snapshot.Snapshot, -1 }
+	}
 
 	// Start background routine that will start elections after timeout
 	rf.resetTimeout()
