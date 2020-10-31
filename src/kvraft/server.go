@@ -55,17 +55,18 @@ type KVServer struct {
 	maxraftstate 	 int // snapshot if log grows this big
 	lastAppliedIndex int // log index of last applied command
 
-	lastApplied []cmdResults
+	lastApplied []CmdResults
 	kvstore		map[string]string
 }
 
-type cmdResults struct {
-	cmd Op
-	value string
-	err Err
+type CmdResults struct {
+	Cmd Op
+	Value string
+	Err Err
 }
 
 type KVSnapshot struct {
+	LastApplied []CmdResults
 	KVStore map[string]string
 	LastAppliedIndex int
 }
@@ -80,10 +81,10 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	lastAppliedMatch := func(msg raft.ApplyMsg, index int) bool {
 		if msg.CommandIndex == index {
 			lastApplied := kv.lastApplied[args.ClientID]
-			if lastApplied.cmd.CommandID == args.CommandID {
+			if lastApplied.Cmd.CommandID == args.CommandID {
 				reply.WrongLeader = false
-				reply.Err = lastApplied.err
-				reply.Value = lastApplied.value
+				reply.Err = lastApplied.Err
+				reply.Value = lastApplied.Value
 				DPrintf("KVServer %d successfully returning Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
 			} else {
 				reply.WrongLeader = true
@@ -112,9 +113,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		// If client has been registered, check the last applied cmd for
 		// the client & see if its command ID matches the one of our request
 		lastApplied := kv.lastApplied[args.ClientID]
-		if lastApplied.cmd.CommandID == args.CommandID {
+		if lastApplied.Cmd.CommandID == args.CommandID {
 			reply.WrongLeader = false
-			reply.Err = lastApplied.err
+			reply.Err = lastApplied.Err
 			DPrintf("KVServer %d successfully returning PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
 			return true
 		} else { return false }
@@ -227,27 +228,27 @@ func (kv *KVServer) readApplyCh() (raft.ApplyMsg, bool) {
 func (kv *KVServer) apply(op Op) {
 	switch op.Type {
 	case OpRegisterClient:
-		kv.lastApplied = append(kv.lastApplied, cmdResults{op, "", OK})
+		kv.lastApplied = append(kv.lastApplied, CmdResults{op, "", OK})
 	case OpGet:
 		val, ok := kv.kvstore[op.Key]
 		if ok {
-			kv.lastApplied[op.ClientID] = cmdResults{ op, val, OK }
+			kv.lastApplied[op.ClientID] = CmdResults{ op, val, OK }
 		} else {
-			kv.lastApplied[op.ClientID] = cmdResults{ op, "", ErrNoKey }
+			kv.lastApplied[op.ClientID] = CmdResults{ op, "", ErrNoKey }
 		}
 	case OpPut:
-		if kv.lastApplied[op.ClientID].cmd.CommandID != op.CommandID {
+		if kv.lastApplied[op.ClientID].Cmd.CommandID != op.CommandID {
 			kv.kvstore[op.Key] = op.Value
-			kv.lastApplied[op.ClientID] = cmdResults{ op, "", OK }
+			kv.lastApplied[op.ClientID] = CmdResults{ op, "", OK }
 		}
 	case OpAppend:
-		if kv.lastApplied[op.ClientID].cmd.CommandID != op.CommandID {
+		if kv.lastApplied[op.ClientID].Cmd.CommandID != op.CommandID {
 			val, ok := kv.kvstore[op.Key]
 			if ok {
 				kv.kvstore[op.Key] = val + op.Value
-				kv.lastApplied[op.ClientID] = cmdResults{ op, "", OK }
+				kv.lastApplied[op.ClientID] = CmdResults{ op, "", OK }
 			} else {
-				kv.lastApplied[op.ClientID] = cmdResults{ op, "", ErrNoKey }
+				kv.lastApplied[op.ClientID] = CmdResults{ op, "", ErrNoKey }
 			}
 		}
 	default:
@@ -296,7 +297,7 @@ func (kv *KVServer) bgSnapshotter() {
 			return
 		}
 		if kv.rf.StateSizeLimitReached(kv.maxraftstate) {
-			snapshot := KVSnapshot{ kv.kvstore, kv.lastAppliedIndex }
+			snapshot := KVSnapshot{ kv.lastApplied, kv.kvstore, kv.lastAppliedIndex }
 			kv.rf.Snapshot(snapshot, kv.lastAppliedIndex)
 		}
 		kv.mu.Unlock()
