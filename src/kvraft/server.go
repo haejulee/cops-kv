@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Debug = 1
+const Debug = 0
 var logFile *os.File = nil
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
