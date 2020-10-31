@@ -18,35 +18,39 @@ func (rf *Raft) leaderLogReplication(term int) {
 			return
 		}
 		// Update commit index
-		for commitIndex:=rf.commitIndex; commitIndex<len(rf.Log); commitIndex++ {
-			// Count number of replications for log entry with commitIndex
-			ct := 1
-			for i := range rf.peers {
-				if i != rf.me && rf.matchIndex[i] >= commitIndex {
-					ct += 1
+		for commitIndex:=rf.commitIndex; commitIndex<=rf.highestLogIndex(); commitIndex++ {
+			// Do only for log entries whose term is the current term:
+			if rf.logEntry(commitIndex).Term == rf.CurrentTerm {
+				// Count number of replications for log entry with commitIndex
+				ct := 1
+				for i := range rf.peers {
+					if i != rf.me && rf.matchIndex[i] >= commitIndex {
+						ct += 1
+					}
 				}
-			}
-			// If log[commitIndex].Term is current term and the log entry
-			// has been replicated on a majority of servers, commit index
-			if rf.Log[commitIndex].Term == rf.CurrentTerm &&
-				ct > len(rf.peers)/2 {
-				rf.commitIndex = commitIndex
+				// If the log entry has been replicated on a majority of servers,
+				// commit index & continue
+				if ct > len(rf.peers)/2 {
+					rf.commitIndex = commitIndex
+				} else { // Else, break from for loop
+					break
+				}
 			}
 		}
 		// Initiate log replications
 		for i, nextIndex := range rf.nextIndex {
 			// If last log index >= nextIndex
-			if i != rf.me && len(rf.Log) > nextIndex {
+			if i != rf.me && rf.highestLogIndex() >= nextIndex {
 				// Send AppendEntries with log entries starting at nextIndex
 				args := &AppendEntriesArgs{
 					rf.CurrentTerm,
 					rf.me,
 					nextIndex-1,
-					rf.Log[nextIndex-1].Term,
+					rf.logEntry(nextIndex-1).Term,
 					rf.commitIndex,
-					rf.Log[nextIndex:],
+					rf.logSlice(nextIndex,-1),
 				}
-				rf.nextIndex[i] = len(rf.Log)
+				rf.nextIndex[i] = rf.highestLogIndex() + 1
 				go rf.replicateLog(i, args)
 			}
 		}

@@ -19,6 +19,33 @@ func (rf *Raft) GetState() (term int, isLeader bool) {
 	return
 }
 
+// Returns the log entry corresponding to the given log entry index
+func (rf *Raft) logEntry(index int) *logEntry {
+	if index == 0 {
+		return &logEntry{0,nil}
+	}
+	if index < 0 {
+		log.Printf("Index %d\n", index)
+	}
+	return &(rf.Log[index - 1])
+}
+
+// Returns the index of the last entry currently in the log
+func (rf *Raft) highestLogIndex() int {
+	return len(rf.Log)
+}
+
+// Returns slice of log from start index to end index (conceptual indices), inclusive
+func (rf *Raft) logSlice(startIndex, endIndex int) []logEntry {
+	if startIndex == -1 {
+		return rf.Log[ : endIndex]
+	} else if endIndex == -1 {
+		return rf.Log[startIndex - 1 : ]
+	} else {
+		return rf.Log[startIndex - 1 : endIndex]
+	}
+}
+
 //
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
@@ -87,7 +114,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return 0, 0, false
 	}
 	// Get next index & current term
-	index := len(rf.Log)
+	index := rf.highestLogIndex() + 1
 	term := rf.CurrentTerm
 	// Create log entry for command
 	entry := logEntry{term, command}
@@ -134,9 +161,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Initialize persistent state
 	rf.CurrentTerm = 0			// Start at term 0
 	rf.VotedFor = -1			// Null value of votedFor is -1
-	rf.Log = []logEntry{		// Initialize log with dummy entry at index 0
-		logEntry{0,nil},		// (first log entry index is 1)
-	}
+	rf.Log = []logEntry{}		// Initialize empty log
 	rf.SnapshotIndex = 0		// Start at dummy index 0
 	rf.SnapshotTerm = 0			// Start at dummy term 0
 
@@ -172,7 +197,7 @@ func (rf *Raft) applyCommands(applyCh chan ApplyMsg) {
 		var i int
 		for rf.lastApplied < rf.commitIndex {
 			i = rf.lastApplied + 1
-			msg := ApplyMsg{true, rf.Log[i].Command, i}
+			msg := ApplyMsg{true, rf.logEntry(i).Command, i}
 			rf.mu.Unlock()
 			applyCh <- msg
 			rf.mu.Lock()

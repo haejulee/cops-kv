@@ -62,10 +62,10 @@ func (rf *Raft) leaderElection() {
 	rf.persist()
 	// Create RequestVote args
 	args := &RequestVoteArgs{
-		rf.CurrentTerm,				// Candidate's term
-		rf.me,						// Candidate's ID
-		len(rf.Log)-1,				// Index of candidate's last log entry
-		rf.Log[len(rf.Log)-1].Term,	// Term of candidate's last log entry
+		rf.CurrentTerm,							// Candidate's term
+		rf.me,									// Candidate's ID
+		rf.highestLogIndex(),					// Index of candidate's last log entry
+		rf.logEntry(rf.highestLogIndex()).Term,	// Term of candidate's last log entry
 	}
 	// Set new election timeout
 	rf.resetTimeout()
@@ -122,7 +122,7 @@ func (rf *Raft) requestVotes(args *RequestVoteArgs) {
 		DPrintf("Raft %d became leader, term %d\n", rf.me, rf.CurrentTerm)
 		for i := range rf.peers {
 			// Initialize leader volatile state
-			rf.nextIndex[i] = len(rf.Log)	// last log index + 1
+			rf.nextIndex[i] = rf.highestLogIndex() + 1 // last log index + 1
 			rf.matchIndex[i] = 0
 		}
 		// Save the term for which rf became leader
@@ -196,7 +196,7 @@ func (rf *Raft) leaderHeartbeats(term int) {
 						rf.CurrentTerm,					// Leader term
 						rf.me,							// Leader ID
 						rf.nextIndex[i]-1,				// prev log index
-						rf.Log[rf.nextIndex[i]-1].Term,	// prev log term
+						rf.logEntry(rf.nextIndex[i]-1).Term, // prev log term
 						rf.commitIndex,					// Leader's commitIndex
 						[]logEntry{},					// No log entries
 					}
