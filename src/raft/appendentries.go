@@ -24,6 +24,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
+	// If PrevLogIndex is less than SnapshotIndex, return ConflictIndex=commitIndex
+	if args.PrevLogIndex < rf.SnapshotIndex {
+		reply.Term = rf.CurrentTerm
+		reply.Success = false
+		reply.ConflictIndex = rf.commitIndex + 1 // "try from rf.commitIndex+1 next time"
+		return
+	}
 	// Pre-calculate current highest log index & the term corresponding to prevlogindex
 	highestLogIndex := rf.highestLogIndex()
 	prevLogTerm := 0
