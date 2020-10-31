@@ -18,6 +18,7 @@ type Raft struct {
 	peers		[]*labrpc.ClientEnd	// RPC end points of all peers
 	persister	*Persister			// Object to hold this peer's persisted state
 	me			int					// this peer's index into peers[]
+	applyCh		chan ApplyMsg
 	
 	// State for timeout checking
 	lastTimeoutReset time.Time		// Last time election timeout was reset

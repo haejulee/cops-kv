@@ -19,8 +19,15 @@ func (rf *Raft) leaderLogReplication(term int) {
 		}
 		// Update commit index
 		for commitIndex:=rf.commitIndex; commitIndex<=rf.highestLogIndex(); commitIndex++ {
+			// Calculate term of log entry at commitIndex (commitIndex could be SnapshotIndex)
+			var term int
+			if commitIndex == rf.SnapshotIndex {
+				term = rf.SnapshotTerm
+			} else {
+				term = rf.logEntry(commitIndex).Term
+			}
 			// Do only for log entries whose term is the current term:
-			if rf.logEntry(commitIndex).Term == rf.CurrentTerm {
+			if term == rf.CurrentTerm {
 				// Count number of replications for log entry with commitIndex
 				ct := 1
 				for i := range rf.peers {
@@ -41,17 +48,39 @@ func (rf *Raft) leaderLogReplication(term int) {
 		for i, nextIndex := range rf.nextIndex {
 			// If last log index >= nextIndex
 			if i != rf.me && rf.highestLogIndex() >= nextIndex {
-				// Send AppendEntries with log entries starting at nextIndex
-				args := &AppendEntriesArgs{
-					rf.CurrentTerm,
-					rf.me,
-					nextIndex-1,
-					rf.logEntry(nextIndex-1).Term,
-					rf.commitIndex,
-					rf.logSlice(nextIndex,-1),
+				if nextIndex > rf.SnapshotIndex {
+					// Calculate previous index & previous term
+					prevIndex := nextIndex-1
+					var prevTerm int
+					if prevIndex == rf.SnapshotIndex {
+						prevTerm = rf.SnapshotTerm
+					} else {
+						prevTerm = rf.logEntry(prevIndex).Term
+					}
+					// Send AppendEntries with log entries starting at nextIndex
+					args := &AppendEntriesArgs{
+						rf.CurrentTerm,
+						rf.me,
+						prevIndex,
+						prevTerm,
+						rf.commitIndex,
+						rf.logSlice(nextIndex,-1),
+					}
+					rf.nextIndex[i] = rf.highestLogIndex() + 1
+					go rf.replicateLog(i, args)
+				} else {
+					// Send InstallSnapshot
+					snapshot, _ := rf.readSnapshot()
+					args := &InstallSnapshotArgs{
+						rf.CurrentTerm,
+						rf.me,
+						rf.SnapshotIndex,
+						rf.SnapshotTerm,
+						snapshot.Snapshot,
+					}
+					rf.nextIndex[i] = rf.SnapshotIndex + 1
+					go rf.replicateSnapshot(i, args)
 				}
-				rf.nextIndex[i] = rf.highestLogIndex() + 1
-				go rf.replicateLog(i, args)
 			}
 		}
 		rf.mu.Unlock()
@@ -80,6 +109,34 @@ func (rf *Raft) replicateLog(i int, args *AppendEntriesArgs) {
 			} else {
 				// Else if success returned false, decrement rf.nextIndex[i]
 				rf.nextIndex[i] = reply.ConflictIndex
+			}
+		}
+		// If rf no longer alive, return
+		if rf.stillAlive == false {
+			rf.mu.Unlock()
+			return
+		}
+		// Stop trying if no longer leader for the same term
+		if rf.currentRole != Leader || rf.CurrentTerm != args.Term {
+			rf.mu.Unlock()
+			return
+		}
+		rf.mu.Unlock()
+	}
+}
+
+func (rf *Raft) replicateSnapshot(i int, args *InstallSnapshotArgs) {
+	var reply InstallSnapshotReply
+	// Send InstallSnapshot RPC until a response is received
+	for ok := false ; !ok ; time.Sleep(time.Duration(heartbeatPeriod/2)) {
+		// Send appendEntries
+		ok = rf.sendInstallSnapshot(i, args, &reply)
+		rf.mu.Lock()
+		if ok {
+			if reply.Term > args.Term {
+				// If term is greater than currentTerm, update currentTerm
+				// & revert to follower
+				rf.updateTerm(reply.Term)
 			}
 		}
 		// If rf no longer alive, return

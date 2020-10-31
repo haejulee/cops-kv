@@ -19,6 +19,12 @@ func (rf *Raft) GetState() (term int, isLeader bool) {
 	return
 }
 
+func (rf *Raft) IsAlive() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.stillAlive
+}
+
 // Returns the log entry corresponding to the given log entry index
 func (rf *Raft) logEntry(index int) *logEntry {
 	if index == 0 {
@@ -27,22 +33,26 @@ func (rf *Raft) logEntry(index int) *logEntry {
 	if index < 0 {
 		DPrintf("Index %d\n", index)
 	}
-	return &(rf.Log[index - 1])
+	DPrintf("Raft %d logEntry: index %d snapshotIndex %d logLength %d\n", rf.me, index, rf.SnapshotIndex, len(rf.Log))
+	return &(rf.Log[index - 1 - rf.SnapshotIndex])
 }
 
 // Returns the index of the last entry currently in the log
 func (rf *Raft) highestLogIndex() int {
-	return len(rf.Log)
+	return len(rf.Log) + rf.SnapshotIndex
 }
 
 // Returns slice of log from start index to end index (conceptual indices), inclusive
 func (rf *Raft) logSlice(startIndex, endIndex int) []logEntry {
+	if startIndex < 0 || endIndex < 0 {
+		DPrintf("startIndex %d endIndex %d\n", startIndex, endIndex)
+	}
 	if startIndex == -1 {
-		return rf.Log[ : endIndex]
+		return rf.Log[ : endIndex - rf.SnapshotIndex]
 	} else if endIndex == -1 {
-		return rf.Log[startIndex - 1 : ]
+		return rf.Log[startIndex - 1 - rf.SnapshotIndex : ]
 	} else {
-		return rf.Log[startIndex - 1 : endIndex]
+		return rf.Log[startIndex - 1 - rf.SnapshotIndex : endIndex - rf.SnapshotIndex]
 	}
 }
 
@@ -162,10 +172,13 @@ func (rf *Raft) Kill() {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	labgob.Register(RaftSnapshot{})
+	
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh
 	rf.stillAlive = true
 
 	// Initialize persistent state
@@ -198,12 +211,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.electionTimeoutChecker()
 
 	// Start background routine that will apply commands as they're committed
-	go rf.applyCommands(applyCh)
+	go rf.applyCommands()
 
 	return rf
 }
 
-func (rf *Raft) applyCommands(applyCh chan ApplyMsg) {
+func (rf *Raft) applyCommands() {
 	for true {
 		rf.mu.Lock()
 		if rf.stillAlive == false {
@@ -214,8 +227,9 @@ func (rf *Raft) applyCommands(applyCh chan ApplyMsg) {
 		for rf.lastApplied < rf.commitIndex {
 			i = rf.lastApplied + 1
 			msg := ApplyMsg{true, rf.logEntry(i).Command, i}
+			DPrintf("Raft %d applying entry %d\n", rf.me, i)
 			rf.mu.Unlock()
-			applyCh <- msg
+			rf.applyCh <- msg
 			rf.mu.Lock()
 			rf.lastApplied = i
 		}

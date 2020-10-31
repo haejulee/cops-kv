@@ -17,13 +17,24 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
-	highestLogIndex := rf.highestLogIndex()
+	defer rf.mu.Unlock()
+	// If term is less than currentTerm, return false
 	if args.Term < rf.CurrentTerm {
-		// If term is less than currentTerm, return false
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
-	} else if highestLogIndex < args.PrevLogIndex ||
-		rf.logEntry(args.PrevLogIndex).Term != args.PrevLogTerm {
+		return
+	}
+	// Pre-calculate current highest log index & the term corresponding to prevlogindex
+	highestLogIndex := rf.highestLogIndex()
+	prevLogTerm := 0
+	if highestLogIndex >= args.PrevLogIndex {
+		if args.PrevLogIndex == rf.SnapshotIndex {
+			prevLogTerm = rf.SnapshotTerm
+		} else {
+			prevLogTerm = rf.logEntry(args.PrevLogIndex).Term
+		}
+	}
+	if highestLogIndex < args.PrevLogIndex || prevLogTerm != args.PrevLogTerm {
 		// If log doesn't contain entry at prevLogIndex whose term == prevLogTerm
 		// return index of first element with the conflicting term
 		if highestLogIndex < args.PrevLogIndex {
@@ -68,7 +79,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.CurrentTerm
 		reply.Success = true
 	}
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {

@@ -192,11 +192,17 @@ func (rf *Raft) leaderHeartbeats(term int) {
 			DPrintf("Raft %d sending heartbeats\n", rf.me)
 			for i := range rf.peers {
 				if i != rf.me {
+					var prevLogTerm int
+					if rf.nextIndex[i] == rf.SnapshotIndex + 1 {
+						prevLogTerm = rf.SnapshotTerm
+					} else {
+						prevLogTerm = rf.logEntry(rf.nextIndex[i]-1).Term
+					}
 					args := &AppendEntriesArgs{			// Heartbeat request:
 						rf.CurrentTerm,					// Leader term
 						rf.me,							// Leader ID
 						rf.nextIndex[i]-1,				// prev log index
-						rf.logEntry(rf.nextIndex[i]-1).Term, // prev log term
+						prevLogTerm,					// prev log term
 						rf.commitIndex,					// Leader's commitIndex
 						[]logEntry{},					// No log entries
 					}

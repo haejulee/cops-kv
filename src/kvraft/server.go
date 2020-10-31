@@ -52,7 +52,8 @@ type KVServer struct {
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
 
-	maxraftstate int // snapshot if log grows this big
+	maxraftstate 	 int // snapshot if log grows this big
+	lastAppliedIndex int // log index of last applied command
 
 	lastApplied []cmdResults
 	kvstore		map[string]string
@@ -62,6 +63,11 @@ type cmdResults struct {
 	cmd Op
 	value string
 	err Err
+}
+
+type KVSnapshot struct {
+	KVStore map[string]string
+	LastAppliedIndex int
 }
 
 
@@ -195,10 +201,13 @@ func (kv *KVServer) RPCHandler(setWrongLeader func(),
 			cmd := committed.Command.(Op)
 			// Apply the command to kvstore
 			kv.apply(cmd)
+			kv.lastAppliedIndex = committed.CommandIndex
 			// Check if the applied cmd matches our request
 			if (lastAppliedMatch(committed, index)) {
 				break
 			}
+		} else {
+			kv.applySnapshot(committed.Command.(KVSnapshot))
 		}
 	}
 }
@@ -245,6 +254,11 @@ func (kv *KVServer) apply(op Op) {
 	}
 }
 
+func (kv *KVServer) applySnapshot(snapshot KVSnapshot) {
+	kv.kvstore = snapshot.KVStore
+	kv.lastAppliedIndex = snapshot.LastAppliedIndex
+}
+
 
 // Read newly committed commands from applyCh and apply them periodically
 // Runs in a separate routine in the background
@@ -252,13 +266,38 @@ func (kv *KVServer) bgReadApplyCh() {
 	var committed raft.ApplyMsg
 	for {
 		kv.mu.Lock()
+		if !kv.rf.IsAlive() {
+			kv.mu.Unlock()
+			return
+		}
 		for ok := true; ok; {
 			// Do a non-blocking read from applyCh
 			committed, ok = kv.readApplyCh()
 			// Apply the newly committed command
-			if ok && committed.CommandValid {
-				kv.apply(committed.Command.(Op))
+			if ok {
+				if committed.CommandValid {
+					kv.apply(committed.Command.(Op))
+					kv.lastAppliedIndex = committed.CommandIndex
+				} else {
+					kv.applySnapshot(committed.Command.(KVSnapshot))
+				}
 			}
+		}
+		kv.mu.Unlock()
+		time.Sleep(time.Duration(100000000))
+	}
+}
+
+func (kv *KVServer) bgSnapshotter() {
+	for {
+		kv.mu.Lock()
+		if !kv.rf.IsAlive() {
+			kv.mu.Unlock()
+			return
+		}
+		if kv.rf.StateSizeLimitReached(kv.maxraftstate) {
+			snapshot := KVSnapshot{ kv.kvstore, kv.lastAppliedIndex }
+			kv.rf.Snapshot(snapshot, kv.lastAppliedIndex)
 		}
 		kv.mu.Unlock()
 		time.Sleep(time.Duration(100000000))
@@ -273,7 +312,9 @@ func (kv *KVServer) bgReadApplyCh() {
 // turn off debug output from this instance.
 //
 func (kv *KVServer) Kill() {
+	DPrintf("Killing server %d\n", kv.me)
 	kv.rf.Kill()
+	DPrintf("Killed server %d\n", kv.me)
 }
 
 //
@@ -291,13 +332,16 @@ func (kv *KVServer) Kill() {
 // for any long-running work.
 //
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
+	DPrintf("Starting KVServer %d\n", me)
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
+	labgob.Register(KVSnapshot{})
 
 	kv := new(KVServer)
 	kv.me = me
-	kv.maxraftstate = maxraftstate
+	kv.maxraftstate = 1 // maxraftstate
+	kv.lastAppliedIndex = 0
 	kv.kvstore = make(map[string]string)
 
 	// You may need initialization code here.
@@ -308,6 +352,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	go kv.bgReadApplyCh()
+	go kv.bgSnapshotter()
 
 	return kv
 }
