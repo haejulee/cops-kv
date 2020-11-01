@@ -38,10 +38,9 @@ func (rf *Raft) logEntry(index int) *logEntry {
 	if index == 0 {
 		return &logEntry{0,nil}
 	}
-	if index < 0 {
-		DPrintf("Index %d\n", index)
+	if index <= rf.SnapshotIndex {
+		DPrintf("Raft %d logEntry: index %d snapshotIndex %d logLength %d\n", rf.me, index, rf.SnapshotIndex, len(rf.Log))
 	}
-	DPrintf("Raft %d logEntry: index %d snapshotIndex %d logLength %d\n", rf.me, index, rf.SnapshotIndex, len(rf.Log))
 	return &(rf.Log[index - 1 - rf.SnapshotIndex])
 }
 
@@ -135,9 +134,7 @@ func (rf *Raft) readPersist(data []byte) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	DPrintf("Starting new command\n")
 	rf.mu.Lock()
-	DPrintf("Starting new command2\n")
 	// If rf isn't leader, return false
 	if rf.currentRole != Leader {
 		rf.mu.Unlock()
@@ -153,7 +150,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Persist changes to log
 	rf.persist()
 	rf.mu.Unlock()
-	DPrintf("Done starting new command\n")
 	return index, term, true
 }
 

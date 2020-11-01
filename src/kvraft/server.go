@@ -287,9 +287,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
-	DPrintf("ASDF\n")
 	kv.applyCh = make(chan raft.ApplyMsg)
-	DPrintf("QWERTY\n")
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	DPrintf("KVServer %d started\n", kv.me)
 
