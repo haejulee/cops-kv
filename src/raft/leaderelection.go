@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	minElectionTimeout int64 =  500000000	// 0.5 sec
-	maxElectionTimeout int64 = 1000000000	// 1.0 sec
+	minElectionTimeout int64 =  400000000	// 0.4 sec
+	maxElectionTimeout int64 =  800000000	// 0.8 sec
 	heartbeatPeriod    int64 =  100000000	// 0.1 sec
-	timeoutCheckPeriod int64 =   10000000	// 0.01 sec
+	timeoutCheckPeriod int64 =   50000000	// 0.05 sec
 )
 
 func randomizedElectionTimeout() time.Duration {
@@ -55,17 +55,24 @@ func (rf *Raft) leaderElection() {
 	// Start new term as candidate
 	rf.CurrentTerm += 1
 	rf.currentRole = Candidate
-	DPrintf("Raft %d starting election %d\n", rf.me, rf.CurrentTerm)
+	// DPrintf("Raft %d starting election %d\n", rf.me, rf.CurrentTerm)
 	// Vote for self
 	rf.VotedFor = rf.me
 	// Persist changes made to current term & voted for
 	rf.persist()
 	// Create RequestVote args
+	lastLogIndex := rf.highestLogIndex()
+	var lastLogTerm int
+	if lastLogIndex == rf.SnapshotIndex {
+		lastLogTerm = rf.SnapshotTerm
+	} else {
+		lastLogTerm = rf.logEntry(lastLogIndex).Term
+	}
 	args := &RequestVoteArgs{
-		rf.CurrentTerm,							// Candidate's term
-		rf.me,									// Candidate's ID
-		rf.highestLogIndex(),					// Index of candidate's last log entry
-		rf.logEntry(rf.highestLogIndex()).Term,	// Term of candidate's last log entry
+		rf.CurrentTerm,			// Candidate's term
+		rf.me,					// Candidate's ID
+		lastLogIndex,			// Index of candidate's last log entry
+		lastLogTerm,			// Term of candidate's last log entry
 	}
 	// Set new election timeout
 	rf.resetTimeout()
@@ -189,7 +196,7 @@ func (rf *Raft) leaderHeartbeats(term int) {
 		}
 		// Send out heartbeats
 		if rf.CurrentTerm == term && rf.currentRole == Leader {
-			DPrintf("Raft %d sending heartbeats\n", rf.me)
+			// DPrintf("Raft %d sending heartbeats\n", rf.me)
 			for i := range rf.peers {
 				if i != rf.me {
 					args := &AppendEntriesArgs{			// Heartbeat request:

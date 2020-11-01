@@ -32,7 +32,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
 		lastLogIndex := rf.highestLogIndex()
-		lastLogTerm := rf.logEntry(lastLogIndex).Term
+		var lastLogTerm int
+		if lastLogIndex == rf.SnapshotIndex {
+			lastLogTerm = rf.SnapshotTerm
+		} else {
+			lastLogTerm = rf.logEntry(lastLogIndex).Term
+		}
 		if rf.VotedFor == -1 &&
 			(args.LastLogTerm > lastLogTerm ||
 			(args.LastLogTerm == lastLogTerm &&
