@@ -1,4 +1,8 @@
 Submitting lab1
 - lab1 fails one test: TestSequentialSingle
 Submitting lab2
-Submitting lab2 again, with raft refinements
+- lab2 sometimes fails persistence tests
+Submitting lab3
+- lab3 fails linearizability
+- snapshot size takes too long
+- race version of TestSnapshotUnreliableRecoverConcurrentPartition3B failed
