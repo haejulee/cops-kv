@@ -30,10 +30,10 @@ func (rf *Raft) logEntry(index int) *logEntry {
 	if index == 0 {
 		return &logEntry{0,nil}
 	}
-	if index < 0 {
-		DPrintf("Index %d\n", index)
-	}
-	DPrintf("Raft %d logEntry: index %d snapshotIndex %d logLength %d\n", rf.me, index, rf.SnapshotIndex, len(rf.Log))
+	// if index < 0 {
+	// 	DPrintf("Index %d\n", index)
+	// }
+	// DPrintf("Raft %d logEntry: index %d snapshotIndex %d logLength %d\n", rf.me, index, rf.SnapshotIndex, len(rf.Log))
 	return &(rf.Log[index - 1 - rf.SnapshotIndex])
 }
 
@@ -44,15 +44,15 @@ func (rf *Raft) highestLogIndex() int {
 
 // Returns slice of log from start index to end index (conceptual indices), inclusive
 func (rf *Raft) logSlice(startIndex, endIndex int) []logEntry {
-	if startIndex < 0 || endIndex < 0 {
-		DPrintf("startIndex %d endIndex %d\n", startIndex, endIndex)
-	}
+	// if startIndex < 0 || endIndex < 0 {
+	// 	DPrintf("startIndex %d endIndex %d\n", startIndex, endIndex)
+	// }
 	if startIndex == -1 {
 		return rf.Log[ : endIndex - rf.SnapshotIndex]
 	} else if endIndex == -1 {
-		return rf.Log[startIndex - 1 - rf.SnapshotIndex : ]
+		return append([]logEntry{}, rf.Log[startIndex - 1 - rf.SnapshotIndex : ]...)
 	} else {
-		return rf.Log[startIndex - 1 - rf.SnapshotIndex : endIndex - rf.SnapshotIndex]
+		return append([]logEntry{}, rf.Log[startIndex - 1 - rf.SnapshotIndex : endIndex - rf.SnapshotIndex]...)
 	}
 }
 
