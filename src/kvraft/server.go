@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Debug = 0
+const Debug = 1
 var logFile *os.File = nil
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
@@ -74,17 +74,19 @@ type KVSnapshot struct {
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	setWrongLeader := func() {
-		DPrintf("KVServer %d WrongLeader Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
+		// DPrintf("KVServer %d WrongLeader Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
 		reply.WrongLeader = true
 	}
 	
 	lastAppliedMatch := func() bool {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
 		lastApplied, ok := kv.lastApplied[args.ClientID]
 		if ok && lastApplied.Cmd.CommandID == args.CommandID {
 			reply.WrongLeader = false
 			reply.Err = lastApplied.Err
 			reply.Value = lastApplied.Value
-			DPrintf("KVServer %d successfully returning Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
+			// DPrintf("KVServer %d successfully returning Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
 			return true
 		} else { return false }
 	}
@@ -93,21 +95,23 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		return Op { OpGet, args.Key, "", args.ClientID, args.CommandID }
 	}
 	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
-	DPrintf("KVServer %d Get %d-%d: WrongLeader %t %p\n", kv.me, args.ClientID, args.CommandID, reply.WrongLeader, reply)
+	// DPrintf("KVServer %d Get %d-%d: WrongLeader %t %p\n", kv.me, args.ClientID, args.CommandID, reply.WrongLeader, reply)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	setWrongLeader := func() {
-		DPrintf("KVServer %d WrongLeader PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
+		// DPrintf("KVServer %d WrongLeader PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
 		reply.WrongLeader = true
 	}
 	
 	lastAppliedMatch := func() bool {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
 		lastApplied, ok := kv.lastApplied[args.ClientID]
 		if ok && lastApplied.Cmd.CommandID == args.CommandID {
 			reply.WrongLeader = false
 			reply.Err = lastApplied.Err
-			DPrintf("KVServer %d successfully returning PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
+			// DPrintf("KVServer %d successfully returning PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
 			return true
 		} else { return false }
 	}
@@ -122,15 +126,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return command
 	}
 	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
-	DPrintf("KVServer %d PutAppend %d-%d: WrongLeader %t %p\n", kv.me, args.ClientID, args.CommandID, reply.WrongLeader, reply)
+	// DPrintf("KVServer %d PutAppend %d-%d: WrongLeader %t %p\n", kv.me, args.ClientID, args.CommandID, reply.WrongLeader, reply)
 }
 
 // Code shared by Get and PutAppend RPC handlers
 func (kv *KVServer) RPCHandler(setWrongLeader func(),
 							   lastAppliedMatch func() bool,
 							   createCommand func() Op) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	// If not leader, return WrongLeader
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		setWrongLeader()
@@ -156,9 +158,7 @@ func (kv *KVServer) RPCHandler(setWrongLeader func(),
 			break
 		}
 		// Yield lock to let background routine apply commands
-		kv.mu.Unlock()
 		time.Sleep(time.Duration(1000000))
-		kv.mu.Lock()
 		// If matching command applied, return
 		if (lastAppliedMatch()) {
 			break
@@ -166,12 +166,12 @@ func (kv *KVServer) RPCHandler(setWrongLeader func(),
 	}
 }
 
-// Perform a non-blocking read from applyChannel
+// Perform a max 3-second read from applyChannel
 func (kv *KVServer) readApplyCh() (raft.ApplyMsg, bool) {
 	select {
     case applyMsg := <-kv.applyCh:
-        return applyMsg, true
-    default:
+		return applyMsg, true
+	case <-time.After(time.Duration(3000000000)):
         return raft.ApplyMsg{}, false
     }
 }
@@ -212,47 +212,33 @@ func (kv *KVServer) applySnapshot(snapshot KVSnapshot) {
 }
 
 
-// Read newly committed commands from applyCh and apply them periodically
-// Runs in a separate routine in the background
-func (kv *KVServer) bgReadApplyCh() {
-	var committed raft.ApplyMsg
+// Periodically apply newly committed commands from applyCh
+// Also check Raft state size & snapshot when size reaches maxraftstate
+func (kv *KVServer) backgroundWorker() {
 	for {
-		kv.mu.Lock()
+		// If server has been killed, terminate this routine as well
 		if !kv.rf.IsAlive() {
-			kv.mu.Unlock()
 			return
 		}
-		for ok := true; ok; {
-			// Do a non-blocking read from applyCh
-			committed, ok = kv.readApplyCh()
-			// Apply the newly committed command
-			if ok {
-				if committed.CommandValid {
-					kv.apply(committed.Command.(Op))
-					kv.lastAppliedIndex = committed.CommandIndex
-				} else {
-					kv.applySnapshot(committed.Command.(KVSnapshot))
-				}
-			}
+		// Read a commit from applyCh
+		committed, ok := kv.readApplyCh()
+		if !ok {
+			continue
 		}
-		kv.mu.Unlock()
-		time.Sleep(time.Duration(500000))
-	}
-}
-
-func (kv *KVServer) bgSnapshotter() {
-	for {
 		kv.mu.Lock()
-		if !kv.rf.IsAlive() {
-			kv.mu.Unlock()
-			return
+		// Apply the newly committed command (regular or snapshot)
+		if committed.CommandValid {
+			kv.apply(committed.Command.(Op))
+			kv.lastAppliedIndex = committed.CommandIndex
+		} else {
+			kv.applySnapshot(committed.Command.(KVSnapshot))
 		}
+		// Check if it's time for a snapshot
 		if kv.rf.StateSizeLimitReached(kv.maxraftstate) {
 			snapshot := KVSnapshot{ kv.lastApplied, kv.kvstore, kv.lastAppliedIndex }
 			kv.rf.Snapshot(snapshot, kv.lastAppliedIndex)
 		}
 		kv.mu.Unlock()
-		time.Sleep(time.Duration(100000000))
 	}
 }
 
@@ -264,9 +250,9 @@ func (kv *KVServer) bgSnapshotter() {
 // turn off debug output from this instance.
 //
 func (kv *KVServer) Kill() {
-	DPrintf("Killing server %d\n", kv.me)
+	// DPrintf("Killing server %d\n", kv.me)
 	kv.rf.Kill()
-	DPrintf("Killed server %d\n", kv.me)
+	// DPrintf("Killed server %d\n", kv.me)
 }
 
 //
@@ -304,8 +290,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	DPrintf("KVServer %d started\n", kv.me)
 
 	// You may need initialization code here.
-	go kv.bgReadApplyCh()
-	go kv.bgSnapshotter()
+	go kv.backgroundWorker()
 
 	return kv
 }
