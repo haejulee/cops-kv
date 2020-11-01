@@ -30,12 +30,15 @@ type Config struct {
 
 const (
 	OK = "OK"
+	ErrInvalidIndex = "Invalid config index given"
 )
 
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	ClientID	int64
+	CommandID	uint8
+	Servers ServerMap // new GID -> servers mappings
 }
 
 type JoinReply struct {
@@ -44,6 +47,8 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
+	ClientID	int64
+	CommandID	uint8
 	GIDs []int
 }
 
@@ -53,6 +58,8 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
+	ClientID	int64
+	CommandID	uint8
 	Shard int
 	GID   int
 }
@@ -63,6 +70,8 @@ type MoveReply struct {
 }
 
 type QueryArgs struct {
+	ClientID	int64
+	CommandID	uint8
 	Num int // desired config number
 }
 
