@@ -28,7 +28,7 @@ type RaftSnapshot struct {
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
-	DPrintf("Install snapshot %d\n", rf.me)
+	DPrintf("Raft %d install snapshot index %d\n", rf.me, args.LastIncludedIndex)
 	reply.Term = rf.CurrentTerm
 	// If term is less than current term, return immediately
 	if args.Term < rf.CurrentTerm {

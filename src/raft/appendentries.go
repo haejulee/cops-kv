@@ -48,6 +48,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// Else, return lowest index with the same term as the one at PrevLogIndex
 			term := rf.logTerm(args.PrevLogIndex)
 			for i:=args.PrevLogIndex; i>=0; i-- {
+				if i == rf.SnapshotIndex {
+					DPrintf("%d %d %d\n", args.PrevLogIndex, args.PrevLogTerm, rf.SnapshotTerm)
+				}
+				if i < rf.SnapshotIndex {
+					DPrintf("%d %d\n", args.PrevLogIndex, args.PrevLogTerm)
+				}
 				if rf.logTerm(i) != term {
 					reply.ConflictIndex = i + 1
 					break

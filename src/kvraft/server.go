@@ -73,7 +73,7 @@ type KVSnapshot struct {
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	DPrintf("Get RPC: %d\n", args.CommandID)
+	// DPrintf("Get RPC: %d\n", args.CommandID)
 	setWrongLeader := func() {
 		// DPrintf("KVServer %d WrongLeader Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
 		reply.WrongLeader = true
@@ -100,7 +100,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	DPrintf("PutAppend RPC: %d\n", args.CommandID)
+	// DPrintf("PutAppend RPC: %d\n", args.CommandID)
 	setWrongLeader := func() {
 		// DPrintf("KVServer %d WrongLeader PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
 		reply.WrongLeader = true

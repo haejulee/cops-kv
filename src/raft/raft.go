@@ -241,7 +241,7 @@ func (rf *Raft) applyCommands() {
 		for rf.lastApplied < rf.commitIndex {
 			i = rf.lastApplied + 1
 			msg := ApplyMsg{true, rf.logEntry(i).Command, i}
-			DPrintf("Raft %d applying entry %d\n", rf.me, i)
+			// DPrintf("Raft %d applying entry %d\n", rf.me, i)
 			rf.lastApplied = i
 			rf.mu.Unlock()
 			rf.applyCh <- msg
