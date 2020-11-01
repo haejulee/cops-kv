@@ -25,15 +25,23 @@ func (rf *Raft) IsAlive() bool {
 	return rf.stillAlive
 }
 
+func (rf *Raft) logTerm(index int) int {
+	if index == rf.SnapshotIndex {
+		return rf.SnapshotTerm
+	} else {
+		return rf.logEntry(index).Term
+	}
+}
+
 // Returns the log entry corresponding to the given log entry index
 func (rf *Raft) logEntry(index int) *logEntry {
 	if index == 0 {
 		return &logEntry{0,nil}
 	}
-	// if index < 0 {
-	// 	DPrintf("Index %d\n", index)
-	// }
-	// DPrintf("Raft %d logEntry: index %d snapshotIndex %d logLength %d\n", rf.me, index, rf.SnapshotIndex, len(rf.Log))
+	if index < 0 {
+		DPrintf("Index %d\n", index)
+	}
+	DPrintf("Raft %d logEntry: index %d snapshotIndex %d logLength %d\n", rf.me, index, rf.SnapshotIndex, len(rf.Log))
 	return &(rf.Log[index - 1 - rf.SnapshotIndex])
 }
 
@@ -127,7 +135,9 @@ func (rf *Raft) readPersist(data []byte) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	DPrintf("Starting new command\n")
 	rf.mu.Lock()
+	DPrintf("Starting new command2\n")
 	// If rf isn't leader, return false
 	if rf.currentRole != Leader {
 		rf.mu.Unlock()
@@ -143,6 +153,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Persist changes to log
 	rf.persist()
 	rf.mu.Unlock()
+	DPrintf("Done starting new command\n")
 	return index, term, true
 }
 
@@ -173,6 +184,7 @@ func (rf *Raft) Kill() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	labgob.Register(RaftSnapshot{})
+	DPrintf("Making Raft peer\n")
 	
 	rf := &Raft{}
 	rf.peers = peers
@@ -197,13 +209,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 
+	DPrintf("Reading persistent state\n")
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	DPrintf("Reading snapshot\n")
 	// Recover snapshot from persistent state if applicable
 	snapshot, ok := rf.readSnapshot()
 	if ok {
-		applyCh <- ApplyMsg{ false, snapshot.Snapshot, -1 }
+		DPrintf("Raft %d recovering from snapshot\n", rf.me)
+		rf.lastApplied = rf.SnapshotIndex
+		rf.commitIndex = rf.SnapshotIndex
+		go recoverFromSnapshot(applyCh, ApplyMsg{ false, snapshot.Snapshot, -1 })
 	}
 
 	// Start background routine that will start elections after timeout
@@ -213,6 +230,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Start background routine that will apply commands as they're committed
 	go rf.applyCommands()
 
+	DPrintf("Made Raft peer\n")
 	return rf
 }
 
@@ -236,4 +254,8 @@ func (rf *Raft) applyCommands() {
 		rf.mu.Unlock()
 		time.Sleep(time.Duration(heartbeatPeriod))
 	}
+}
+
+func recoverFromSnapshot(ch chan ApplyMsg, msg ApplyMsg) {
+	ch <- msg
 }

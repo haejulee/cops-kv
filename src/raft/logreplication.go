@@ -19,15 +19,8 @@ func (rf *Raft) leaderLogReplication(term int) {
 		}
 		// Update commit index
 		for commitIndex:=rf.commitIndex; commitIndex<=rf.highestLogIndex(); commitIndex++ {
-			// Calculate term of log entry at commitIndex (commitIndex could be SnapshotIndex)
-			var term int
-			if commitIndex == rf.SnapshotIndex {
-				term = rf.SnapshotTerm
-			} else {
-				term = rf.logEntry(commitIndex).Term
-			}
 			// Do only for log entries whose term is the current term:
-			if term == rf.CurrentTerm {
+			if rf.logTerm(commitIndex) == rf.CurrentTerm {
 				// Count number of replications for log entry with commitIndex
 				ct := 1
 				for i := range rf.peers {
@@ -51,12 +44,7 @@ func (rf *Raft) leaderLogReplication(term int) {
 				if nextIndex > rf.SnapshotIndex {
 					// Calculate previous index & previous term
 					prevIndex := nextIndex-1
-					var prevTerm int
-					if prevIndex == rf.SnapshotIndex {
-						prevTerm = rf.SnapshotTerm
-					} else {
-						prevTerm = rf.logEntry(prevIndex).Term
-					}
+					prevTerm := rf.logTerm(prevIndex)
 					// Send AppendEntries with log entries starting at nextIndex
 					args := &AppendEntriesArgs{
 						rf.CurrentTerm,
@@ -84,14 +72,14 @@ func (rf *Raft) leaderLogReplication(term int) {
 			}
 		}
 		rf.mu.Unlock()
-		time.Sleep(time.Duration(heartbeatPeriod/2))
+		time.Sleep(time.Duration(heartbeatPeriod/5))
 	}
 }
 
 func (rf *Raft) replicateLog(i int, args *AppendEntriesArgs) {
 	var reply AppendEntriesReply
 	// Send AppendEntries RPC until a response is received
-	for ok := false ; !ok ; time.Sleep(time.Duration(heartbeatPeriod/2)) {
+	for ok := false ; !ok ; time.Sleep(time.Duration(heartbeatPeriod/5)) {
 		// Send appendEntries
 		ok = rf.sendAppendEntries(i, args, &reply)
 		rf.mu.Lock()
@@ -128,7 +116,7 @@ func (rf *Raft) replicateLog(i int, args *AppendEntriesArgs) {
 func (rf *Raft) replicateSnapshot(i int, args *InstallSnapshotArgs) {
 	var reply InstallSnapshotReply
 	// Send InstallSnapshot RPC until a response is received
-	for ok := false ; !ok ; time.Sleep(time.Duration(heartbeatPeriod/2)) {
+	for ok := false ; !ok ; time.Sleep(time.Duration(heartbeatPeriod/5)) {
 		// Send appendEntries
 		ok = rf.sendInstallSnapshot(i, args, &reply)
 		rf.mu.Lock()

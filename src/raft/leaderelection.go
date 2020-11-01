@@ -62,12 +62,7 @@ func (rf *Raft) leaderElection() {
 	rf.persist()
 	// Create RequestVote args
 	lastLogIndex := rf.highestLogIndex()
-	var lastLogTerm int
-	if lastLogIndex == rf.SnapshotIndex {
-		lastLogTerm = rf.SnapshotTerm
-	} else {
-		lastLogTerm = rf.logEntry(lastLogIndex).Term
-	}
+	lastLogTerm := rf.logTerm(lastLogIndex)
 	args := &RequestVoteArgs{
 		rf.CurrentTerm,			// Candidate's term
 		rf.me,					// Candidate's ID

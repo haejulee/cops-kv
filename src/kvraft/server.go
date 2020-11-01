@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Debug = 1
+const Debug = 0
 var logFile *os.File = nil
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
@@ -73,6 +73,7 @@ type KVSnapshot struct {
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	DPrintf("Get RPC: %d\n", args.CommandID)
 	setWrongLeader := func() {
 		// DPrintf("KVServer %d WrongLeader Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
 		reply.WrongLeader = true
@@ -80,8 +81,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	
 	lastAppliedMatch := func() bool {
 		kv.mu.Lock()
-		defer kv.mu.Unlock()
 		lastApplied, ok := kv.lastApplied[args.ClientID]
+		kv.mu.Unlock()
 		if ok && lastApplied.Cmd.CommandID == args.CommandID {
 			reply.WrongLeader = false
 			reply.Err = lastApplied.Err
@@ -99,6 +100,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	DPrintf("PutAppend RPC: %d\n", args.CommandID)
 	setWrongLeader := func() {
 		// DPrintf("KVServer %d WrongLeader PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
 		reply.WrongLeader = true
@@ -106,8 +108,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	
 	lastAppliedMatch := func() bool {
 		kv.mu.Lock()
-		defer kv.mu.Unlock()
 		lastApplied, ok := kv.lastApplied[args.ClientID]
+		kv.mu.Unlock()
 		if ok && lastApplied.Cmd.CommandID == args.CommandID {
 			reply.WrongLeader = false
 			reply.Err = lastApplied.Err
@@ -152,6 +154,10 @@ func (kv *KVServer) RPCHandler(setWrongLeader func(),
 	}
 	// Read applyCh until 1st occurrence of the request
 	for {
+		// If matching command applied, return
+		if (lastAppliedMatch()) {
+			break
+		}
 		// Keep checking if still leader (for the same term)
 		if curTerm, _ := kv.rf.GetState(); curTerm != term {
 			setWrongLeader()
@@ -159,10 +165,6 @@ func (kv *KVServer) RPCHandler(setWrongLeader func(),
 		}
 		// Yield lock to let background routine apply commands
 		time.Sleep(time.Duration(1000000))
-		// If matching command applied, return
-		if (lastAppliedMatch()) {
-			break
-		}
 	}
 }
 
@@ -285,7 +287,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
+	DPrintf("ASDF\n")
 	kv.applyCh = make(chan raft.ApplyMsg)
+	DPrintf("QWERTY\n")
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	DPrintf("KVServer %d started\n", kv.me)
 

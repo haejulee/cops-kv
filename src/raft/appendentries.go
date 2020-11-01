@@ -35,11 +35,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	highestLogIndex := rf.highestLogIndex()
 	prevLogTerm := 0
 	if len(args.Entries) > 0 && highestLogIndex >= args.PrevLogIndex {
-		if args.PrevLogIndex == rf.SnapshotIndex {
-			prevLogTerm = rf.SnapshotTerm
-		} else {
-			prevLogTerm = rf.logEntry(args.PrevLogIndex).Term
-		}
+		prevLogTerm = rf.logTerm(args.PrevLogIndex)
 	}
 	if len(args.Entries) > 0 &&
 	   (highestLogIndex < args.PrevLogIndex || prevLogTerm != args.PrevLogTerm) {
@@ -50,9 +46,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.ConflictIndex = highestLogIndex + 1
 		} else {
 			// Else, return lowest index with the same term as the one at PrevLogIndex
-			term := rf.logEntry(args.PrevLogIndex).Term
+			term := rf.logTerm(args.PrevLogIndex)
 			for i:=args.PrevLogIndex; i>=0; i-- {
-				if rf.logEntry(i).Term != term {
+				if rf.logTerm(i) != term {
 					reply.ConflictIndex = i + 1
 					break
 				}
