@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	minElectionTimeout int64 =  500000000	// 0.5 sec
-	maxElectionTimeout int64 = 1000000000	// 1.0 sec
+	minElectionTimeout int64 =  400000000	// 0.4 sec
+	maxElectionTimeout int64 =  800000000	// 0.8 sec
 	heartbeatPeriod    int64 =  100000000	// 0.1 sec
-	timeoutCheckPeriod int64 =   10000000	// 0.01 sec
+	timeoutCheckPeriod int64 =   50000000	// 0.05 sec
 )
 
 func randomizedElectionTimeout() time.Duration {
@@ -55,16 +55,19 @@ func (rf *Raft) leaderElection() {
 	// Start new term as candidate
 	rf.CurrentTerm += 1
 	rf.currentRole = Candidate
+	// DPrintf("Raft %d starting election %d\n", rf.me, rf.CurrentTerm)
 	// Vote for self
 	rf.VotedFor = rf.me
 	// Persist changes made to current term & voted for
 	rf.persist()
 	// Create RequestVote args
+	lastLogIndex := rf.highestLogIndex()
+	lastLogTerm := rf.logTerm(lastLogIndex)
 	args := &RequestVoteArgs{
-		rf.CurrentTerm,				// Candidate's term
-		rf.me,						// Candidate's ID
-		len(rf.Log)-1,				// Index of candidate's last log entry
-		rf.Log[len(rf.Log)-1].Term,	// Term of candidate's last log entry
+		rf.CurrentTerm,			// Candidate's term
+		rf.me,					// Candidate's ID
+		lastLogIndex,			// Index of candidate's last log entry
+		lastLogTerm,			// Term of candidate's last log entry
 	}
 	// Set new election timeout
 	rf.resetTimeout()
@@ -118,9 +121,10 @@ func (rf *Raft) requestVotes(args *RequestVoteArgs) {
 		rf.cancelTimeout()
 		// Become leader
 		rf.currentRole = Leader
+		DPrintf("Raft %d became leader, term %d\n", rf.me, rf.CurrentTerm)
 		for i := range rf.peers {
 			// Initialize leader volatile state
-			rf.nextIndex[i] = len(rf.Log)	// last log index + 1
+			rf.nextIndex[i] = rf.highestLogIndex() + 1 // last log index + 1
 			rf.matchIndex[i] = 0
 		}
 		// Save the term for which rf became leader
@@ -187,13 +191,14 @@ func (rf *Raft) leaderHeartbeats(term int) {
 		}
 		// Send out heartbeats
 		if rf.CurrentTerm == term && rf.currentRole == Leader {
+			// DPrintf("Raft %d sending heartbeats\n", rf.me)
 			for i := range rf.peers {
 				if i != rf.me {
 					args := &AppendEntriesArgs{			// Heartbeat request:
 						rf.CurrentTerm,					// Leader term
 						rf.me,							// Leader ID
-						rf.nextIndex[i]-1,				// prev log index
-						rf.Log[rf.nextIndex[i]-1].Term,	// prev log term
+						-1,								// Ignore value
+						-1,								// Ignore value
 						rf.commitIndex,					// Leader's commitIndex
 						[]logEntry{},					// No log entries
 					}

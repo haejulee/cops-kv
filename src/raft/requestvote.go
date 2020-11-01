@@ -31,11 +31,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// at least as up-to-date as server's
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
-		lastLogTerm := rf.Log[len(rf.Log)-1].Term
+		lastLogIndex := rf.highestLogIndex()
+		lastLogTerm := rf.logTerm(lastLogIndex)
 		if rf.VotedFor == -1 &&
 			(args.LastLogTerm > lastLogTerm ||
 			(args.LastLogTerm == lastLogTerm &&
-			args.LastLogIndex >= len(rf.Log)-1)) {
+			args.LastLogIndex >= lastLogIndex)) {
 			// Grant vote
 			rf.VotedFor = args.CandidateID
 			reply.VoteGranted = true

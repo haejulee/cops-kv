@@ -19,21 +19,71 @@ func (rf *Raft) GetState() (term int, isLeader bool) {
 	return
 }
 
+func (rf *Raft) IsAlive() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.stillAlive
+}
+
+func (rf *Raft) logTerm(index int) int {
+	if index == rf.SnapshotIndex {
+		return rf.SnapshotTerm
+	} else {
+		return rf.logEntry(index).Term
+	}
+}
+
+// Returns the log entry corresponding to the given log entry index
+func (rf *Raft) logEntry(index int) *logEntry {
+	if index == 0 {
+		return &logEntry{0,nil}
+	}
+	if index <= rf.SnapshotIndex {
+		DPrintf("Raft %d logEntry: index %d snapshotIndex %d logLength %d\n", rf.me, index, rf.SnapshotIndex, len(rf.Log))
+	}
+	return &(rf.Log[index - 1 - rf.SnapshotIndex])
+}
+
+// Returns the index of the last entry currently in the log
+func (rf *Raft) highestLogIndex() int {
+	return len(rf.Log) + rf.SnapshotIndex
+}
+
+// Returns slice of log from start index to end index (conceptual indices), inclusive
+func (rf *Raft) logSlice(startIndex, endIndex int) []logEntry {
+	// if startIndex < 0 || endIndex < 0 {
+	// 	DPrintf("startIndex %d endIndex %d\n", startIndex, endIndex)
+	// }
+	if startIndex == -1 {
+		return rf.Log[ : endIndex - rf.SnapshotIndex]
+	} else if endIndex == -1 {
+		return append([]logEntry{}, rf.Log[startIndex - 1 - rf.SnapshotIndex : ]...)
+	} else {
+		return append([]logEntry{}, rf.Log[startIndex - 1 - rf.SnapshotIndex : endIndex - rf.SnapshotIndex]...)
+	}
+}
+
+func (rf *Raft) encodePersistentState() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.CurrentTerm)
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.SnapshotIndex)
+	e.Encode(rf.SnapshotTerm)
+	e.Encode(len(rf.Log))
+	for i := range rf.Log {
+		e.Encode(rf.Log[i])
+	}
+	return w.Bytes()
+}
+
 //
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	e.Encode(rf.CurrentTerm)
-	e.Encode(rf.VotedFor)
-	e.Encode(len(rf.Log))
-	for i := range rf.Log {
-		e.Encode(rf.Log[i])
-	}
-	data := w.Bytes()
+	data := rf.encodePersistentState()
 	rf.persister.SaveRaftState(data)
 }
 
@@ -46,14 +96,18 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	var CurrentTerm, VotedFor, nLogs int
+	var CurrentTerm, VotedFor, nLogs, SnapshotIndex, SnapshotTerm int
 	if d.Decode(&CurrentTerm) != nil ||
 		d.Decode(&VotedFor) != nil ||
+		d.Decode(&SnapshotIndex) != nil ||
+		d.Decode(&SnapshotTerm) != nil ||
 		d.Decode(&nLogs) != nil {
 		log.Fatal("failed to decode persistent state")
 	}
 	rf.CurrentTerm = CurrentTerm
 	rf.VotedFor = VotedFor
+	rf.SnapshotIndex = SnapshotIndex
+	rf.SnapshotTerm = SnapshotTerm
 	rf.Log = make([]logEntry, nLogs)
 	for i:=0; i<nLogs; i++ {
 		var entry logEntry
@@ -87,7 +141,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return 0, 0, false
 	}
 	// Get next index & current term
-	index := len(rf.Log)
+	index := rf.highestLogIndex() + 1
 	term := rf.CurrentTerm
 	// Create log entry for command
 	entry := logEntry{term, command}
@@ -125,18 +179,22 @@ func (rf *Raft) Kill() {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	labgob.Register(RaftSnapshot{})
+	DPrintf("Making Raft peer\n")
+	
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh
 	rf.stillAlive = true
 
 	// Initialize persistent state
 	rf.CurrentTerm = 0			// Start at term 0
 	rf.VotedFor = -1			// Null value of votedFor is -1
-	rf.Log = []logEntry{		// Initialize log with dummy entry at index 0
-		logEntry{0,nil},		// (first log entry index is 1)
-	}
+	rf.Log = []logEntry{}		// Initialize empty log
+	rf.SnapshotIndex = 0		// Start at dummy index 0
+	rf.SnapshotTerm = 0			// Start at dummy term 0
 
 	// Initialize volatile state
 	rf.commitIndex = 0			// Start at commitIndex 0
@@ -147,20 +205,32 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 
+	DPrintf("Reading persistent state\n")
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	DPrintf("Reading snapshot\n")
+	// Recover snapshot from persistent state if applicable
+	snapshot, ok := rf.readSnapshot()
+	if ok {
+		DPrintf("Raft %d recovering from snapshot\n", rf.me)
+		rf.lastApplied = rf.SnapshotIndex
+		rf.commitIndex = rf.SnapshotIndex
+		go recoverFromSnapshot(applyCh, ApplyMsg{ false, snapshot.Snapshot, -1 })
+	}
 
 	// Start background routine that will start elections after timeout
 	rf.resetTimeout()
 	go rf.electionTimeoutChecker()
 
 	// Start background routine that will apply commands as they're committed
-	go rf.applyCommands(applyCh)
+	go rf.applyCommands()
 
+	DPrintf("Made Raft peer\n")
 	return rf
 }
 
-func (rf *Raft) applyCommands(applyCh chan ApplyMsg) {
+func (rf *Raft) applyCommands() {
 	for true {
 		rf.mu.Lock()
 		if rf.stillAlive == false {
@@ -170,11 +240,18 @@ func (rf *Raft) applyCommands(applyCh chan ApplyMsg) {
 		var i int
 		for rf.lastApplied < rf.commitIndex {
 			i = rf.lastApplied + 1
-			msg := ApplyMsg{true, rf.Log[i].Command, i}
-			applyCh <- msg
+			msg := ApplyMsg{true, rf.logEntry(i).Command, i}
+			DPrintf("Raft %d applying entry %d\n", rf.me, i)
 			rf.lastApplied = i
+			rf.mu.Unlock()
+			rf.applyCh <- msg
+			rf.mu.Lock()
 		}
 		rf.mu.Unlock()
 		time.Sleep(time.Duration(heartbeatPeriod))
 	}
+}
+
+func recoverFromSnapshot(ch chan ApplyMsg, msg ApplyMsg) {
+	ch <- msg
 }
