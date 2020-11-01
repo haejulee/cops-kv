@@ -13,7 +13,7 @@ import (
 )
 
 
-const Debug = 1
+const Debug = 0
 var logFile *os.File = nil
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
@@ -382,18 +382,53 @@ func (sm *ShardMaster) apply(op Op) {
 }
 
 func reassignShards(shards [NShards]int, groups ServerMap) [NShards]int {
-	if len(groups) == 0 {
+	ngroups := len(groups)
+	if ngroups == 0 {
 		return shards
 	}
-	// TODO: make it fair
-	var group int
-	for g := range groups {
-		group = g
-		break
+	// Calculate min & max size of partitions (how many shards each group takes)
+	minPartition := NShards / ngroups
+	maxPartition := minPartition
+	if NShards % ngroups > 0 {
+		maxPartition += 1
 	}
-	for shard, gid := range shards {
+	// Initialize shardcounts: number of shards assigned to each group
+	shardcounts := make(map[int]int)
+	for gid, _ := range groups {
+		shardcounts[gid] = 0
+	}
+	// Remove shards from groups with too many shards
+	for i, gid := range shards {
+		if shardcounts[gid] >= maxPartition {
+			shards[i] = 0
+		} else {
+			shardcounts[gid] += 1
+		}
+	}
+	// Add shards to groups lacking shards
+	for group, count := range shardcounts {
+		if count < minPartition {
+			for i, gid := range shards {
+				if gid == 0 {
+					shards[i] = group
+					count += 1
+				}
+				if count == minPartition {
+					shardcounts[group] = minPartition
+					break
+				}
+			}
+		}
+	}
+	// Add any remaining shards to groups not already maxed out
+	for i, gid := range shards {
 		if gid == 0 {
-			shards[shard] = group
+			for g, ct := range shardcounts {
+				if ct < maxPartition {
+					shards[i] = g
+					shardcounts[g] += 1
+				}
+			}
 		}
 	}
 	DPrintf("", shards)
