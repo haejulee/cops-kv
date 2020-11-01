@@ -24,7 +24,7 @@ func nrand() int64 {
 }
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
-	// Make a new Clerk struct
+	// Make a new Clerk struct 
 	ck := new(Clerk)
 	// Save servers to Clerk struct
 	ck.servers = servers
