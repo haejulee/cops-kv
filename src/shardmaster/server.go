@@ -386,12 +386,10 @@ func reassignShards(shards [NShards]int, groups ServerMap) [NShards]int {
 	if ngroups == 0 {
 		return shards
 	}
-	// Calculate min & max size of partitions (how many shards each group takes)
+	// Find min size of partitions (=how many shards each group takes)
 	minPartition := NShards / ngroups
-	maxPartition := minPartition
-	if NShards % ngroups > 0 {
-		maxPartition += 1
-	}
+	// Find how many groups need to take one extra shard
+	excessPartitions := NShards % ngroups
 	// Initialize shardcounts: number of shards assigned to each group
 	shardcounts := make(map[int]int)
 	for gid, _ := range groups {
@@ -399,34 +397,36 @@ func reassignShards(shards [NShards]int, groups ServerMap) [NShards]int {
 	}
 	// Remove shards from groups with too many shards
 	for i, gid := range shards {
-		if shardcounts[gid] >= maxPartition {
-			shards[i] = 0
-		} else {
+		count := shardcounts[gid]
+		if count < minPartition {
 			shardcounts[gid] += 1
+		} else if count == minPartition {
+			if excessPartitions > 0 {
+				shardcounts[gid] += 1
+				excessPartitions -= 1
+			} else {
+				shards[i] = 0
+			}
+		} else {
+			shards[i] = 0
 		}
 	}
 	// Add shards to groups lacking shards
 	for group, count := range shardcounts {
-		if count < minPartition {
+		if count < minPartition ||
+		   (excessPartitions > 0 && count < minPartition + 1) {
 			for i, gid := range shards {
-				if gid == 0 {
-					shards[i] = group
-					count += 1
-				}
-				if count == minPartition {
-					shardcounts[group] = minPartition
+				if count < minPartition ||
+				   (excessPartitions > 0 && count < minPartition + 1) {
+					if gid == 0 {
+						shards[i] = group
+						count += 1
+						if count == minPartition + 1 {
+							excessPartitions -= 1
+						}
+					}
+				} else {
 					break
-				}
-			}
-		}
-	}
-	// Add any remaining shards to groups not already maxed out
-	for i, gid := range shards {
-		if gid == 0 {
-			for g, ct := range shardcounts {
-				if ct < maxPartition {
-					shards[i] = g
-					shardcounts[g] += 1
 				}
 			}
 		}
