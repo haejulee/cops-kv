@@ -40,6 +40,8 @@ type Clerk struct {
 	config   shardmaster.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+	clientID      int64
+	nextCommandID uint8
 }
 
 //
@@ -52,10 +54,15 @@ type Clerk struct {
 // send RPCs.
 //
 func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *Clerk {
+	DPrintf("creating clerk\n")
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
 	// You'll have to add code here.
+	ck.config = ck.sm.Query(-1)
+	ck.clientID = nrand()
+	ck.nextCommandID = 1
+	DPrintf("created clerk\n")
 	return ck
 }
 
@@ -66,8 +73,9 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // You will have to modify this function.
 //
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+	DPrintf("sending get request for key %s\n", key)
+	args := GetArgs{ key, ck.clientID, ck.nextCommandID }
+	ck.nextCommandID += 1
 
 	for {
 		shard := key2shard(key)
@@ -99,20 +107,22 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
-
+	DPrintf("sending putappend request for key %s\n", key)
+	args := PutAppendArgs{ key, value, op, ck.clientID, ck.nextCommandID }
+	ck.nextCommandID += 1
 
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
+		DPrintf("key %s has shard %d, for gid %d\n", key, shard, gid)
 		if servers, ok := ck.config.Groups[gid]; ok {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
+				if !ok {
+					DPrintf("putappend failed\n")
+				}
 				if ok && reply.WrongLeader == false && reply.Err == OK {
 					return
 				}
@@ -124,6 +134,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		time.Sleep(100 * time.Millisecond)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
+		DPrintf("config number %d\n", ck.config.Num)
 	}
 }
 
