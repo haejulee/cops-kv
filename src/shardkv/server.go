@@ -247,19 +247,10 @@ func (kv *ShardKV) backgroundWorker() {
 		}
 		// Read a commit from applyCh
 		committed, ok := kv.readApplyCh()
-		// Query config
-		DPrintf("querying config\n")
-		newconfig := kv.mck.Query(-1)
-		kv.mu.Lock()
-		if newconfig.Num > kv.config.Num {
-			// TODO: handle config update
-			DPrintf("server %d-%d: config updated to %d\n", kv.gid, kv.me, newconfig.Num)
-			kv.config = newconfig
-		}
 		if !ok {
-			kv.mu.Unlock()
 			continue
 		}
+		kv.mu.Lock()
 		// Apply the newly committed command (regular or snapshot)
 		if committed.CommandValid {
 			kv.apply(committed.Command.(Op))
@@ -273,6 +264,28 @@ func (kv *ShardKV) backgroundWorker() {
 			kv.rf.Snapshot(snapshot, kv.lastAppliedIndex)
 		}
 		kv.mu.Unlock()
+	}
+}
+
+// Polls shardmaster for config changes every 100 milliseconds
+func (kv *ShardKV) configPoller() {
+	for {
+		// If server has been killed, terminate this routine as well
+		if !kv.rf.IsAlive() {
+			return
+		}
+		// Query config
+		DPrintf("querying config\n")
+		newconfig := kv.mck.Query(-1)
+		kv.mu.Lock()
+		if newconfig.Num > kv.config.Num {
+			// TODO: handle config update
+			DPrintf("server %d-%d: config updated to %d\n", kv.gid, kv.me, newconfig.Num)
+			kv.config = newconfig
+		}
+		kv.mu.Unlock()
+		// Sleep for 100 milliseconds
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -342,6 +355,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	go kv.backgroundWorker()
+	go kv.configPoller()
 	
 	DPrintf("shard %d server %d started. current config number %d\n", kv.gid, kv.me, kv.config.Num)
 
