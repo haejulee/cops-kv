@@ -94,9 +94,19 @@ func (ck *Clerk) Get(key string) string {
 					DPrintf("get success")
 					// Save key:ver to metadata (nearest dependencies)
 					ck.metadata[key] = reply.Version
-					// TODO: never_depend garbage collection
+					// never_depend garbage collection
+					if reply.NeverDepend == true {
+						// Remove key:version from metadata
+						delete(ck.metadata, key)
+						// Remove dependencies' key:version from metadata
+						for k, _ := range reply.Deps {
+							if _, ok := ck.metadata[k]; ok {
+								delete(ck.metadata, k)
+							}
+						}
+					}
+					DPrintf("metadata:", ck.metadata)
 					// Return
-					DPrintf("NEVERDEPEND %t\n", reply.NeverDepend)
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
@@ -138,6 +148,7 @@ func (ck *Clerk) Put(key string, value string) bool {
 					if reply.Err == OK {
 						// Add put to metadata
 						ck.metadata[key] = reply.Version
+						DPrintf("metadata:", ck.metadata)
 						return true
 					} else {
 						return false
