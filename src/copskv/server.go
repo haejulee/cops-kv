@@ -37,6 +37,7 @@ const (
 	OpPutAfter
 	OpGetByVersion
 	OpDepCheck
+	OpNeverDepend
 	OpConfigChange
 )
 
@@ -352,7 +353,6 @@ func (kv *ShardKV) RPCHandler(setWrongLeader func(),
 }
 
 func (kv *ShardKV) DepCheck(args *DepCheckArgs, reply *DepCheckReply) {
-	// TODO: make sure node is the primary of key
 	// Make sure leader
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		reply.WrongLeader = true
@@ -369,6 +369,38 @@ func (kv *ShardKV) DepCheck(args *DepCheckArgs, reply *DepCheckReply) {
 		reply.Ok = true
 	} else {
 		reply.Ok = false
+	}
+}
+
+func (kv *ShardKV) NeverDepend(args *NeverDependArgs, reply *NeverDependReply) {
+	command := Op{}
+	command.Type = OpNeverDepend
+	command.Key = args.Key
+	command.Version = args.Version
+	command.ClientID = args.ClientID
+	_, term, isLeader := kv.rf.Start(command)
+	if !isLeader {
+		reply.WrongLeader = true
+		return
+	}
+	for {
+		// If matching command applied, return
+		kv.mu.Lock()
+		lastApplied, ok := kv.lastApplied[args.ClientID]
+		kv.mu.Unlock()
+		if ok && lastApplied.Cmd.Type == OpNeverDepend &&
+		   lastApplied.Cmd.Version == args.Version {
+			reply.WrongLeader = false
+			reply.Err = lastApplied.Err
+			break
+		}
+		// Keep checking if still leader (for the same term)
+		if curTerm, _ := kv.rf.GetState(); curTerm != term {
+			reply.WrongLeader = true
+			break
+		}
+		// Yield lock to let background routine apply commands
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -465,6 +497,18 @@ func (kv *ShardKV) apply(op Op) {
 				DPrintf("CCC")
 			}
 		}
+	case OpNeverDepend:
+		shard := key2shard(op.Key)
+		if !kv.accepted[shard] {
+			kv.lastApplied[op.ClientID] = CmdResults{ op, 0, op.Key, "", ErrWrongGroup, op.Version, map[string]uint64{}, false }
+			return
+		}
+		entry := kv.kvstore[shard][op.Key]
+		if entry.Version == op.Version {
+			entry.NeverDepend = true
+			kv.kvstore[shard][op.Key] = entry
+		}
+		kv.lastApplied[op.ClientID] = CmdResults{ op, 0, op.Key, "", OK, op.Version, map[string]uint64{}, true }
 	case OpConfigChange:
 		kv.applyConfigChange(op.ConfigNum, op.ShardStore, op.LastApplied, op.Config)
 	default:
@@ -587,6 +631,20 @@ func (kv *ShardKV) replicationWorker() {
 				time.Sleep(10 * time.Millisecond)
 				mu.Lock()
 			}
+			// send out never_depend for key:version
+			for c := 0; c < kv.nclusters; c++ {
+				// Iterate through each other cluster
+				if c != kv.cid {
+					// Find out latest configuration of other cluster
+					latestConf := kv.mcks[c].Query(-1)
+					// Figure out group in charge of key
+					shard := key2shard(op.Key)
+					gid := latestConf.Shards[shard]
+					group := latestConf.Groups[gid]
+					// Send PutAfter request to group until success
+					go kv.sendNeverDepend(op, group)
+				}
+			}
 		} else {
 			kv.mu.Unlock()
 			time.Sleep(10 * time.Millisecond)
@@ -619,6 +677,24 @@ func (kv *ShardKV) replicateToCluster(op Op, group []string, count *int, mu *syn
 			return
 		}
 		DPrintf("replicateToCluster: received error")
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func (kv *ShardKV) sendNeverDepend(op Op, group []string) {
+	args := NeverDependArgs{ op.Key, op.Version, op.ClientID }
+	for i := 0; ; {
+		srv := kv.make_end(group[i])
+		var reply NeverDependReply
+		ok := srv.Call("ShardKV.NeverDepend", &args, &reply)
+		if !ok || reply.WrongLeader {
+			i = (i + 1) % len(group)
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		if reply.Err == OK {
+			return
+		}
 		time.Sleep(time.Millisecond)
 	}
 }

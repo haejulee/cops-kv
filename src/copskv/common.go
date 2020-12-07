@@ -73,3 +73,14 @@ type DepCheckReply struct {
 	WrongLeader bool
 	Ok bool
 }
+
+type NeverDependArgs struct {
+	Key string
+	Version uint64
+	ClientID int64
+}
+
+type NeverDependReply struct {
+	WrongLeader bool
+	Err Err
+}

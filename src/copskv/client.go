@@ -96,6 +96,7 @@ func (ck *Clerk) Get(key string) string {
 					ck.metadata[key] = reply.Version
 					// TODO: never_depend garbage collection
 					// Return
+					DPrintf("NEVERDEPEND %t\n", reply.NeverDepend)
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
