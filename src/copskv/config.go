@@ -18,7 +18,7 @@ const (
 	ngroups = 3 // 3 groups per cluster
 	nreplicas = 3 // 3 replicas per group
 
-	maxraftstate = 100
+	maxraftstate = -1
 )
 
 type Config struct {
