@@ -90,6 +90,8 @@ type ShardKV struct {
 	kvstore [copsmaster.NShards]map[string]Entry // keep a separate k-v store for each shard
 
 	latestTimestamp uint32 // The latest timestamp witnessed
+
+	toReplicate  []Op
 }
 
 type Entry struct {
@@ -392,6 +394,8 @@ func (kv *ShardKV) apply(op Op) {
 				version = kv.versionNumber()
 				kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
 				kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK, version, op.Nearest, false }
+				// Append put operation to replication queue
+				kv.toReplicate = append(kv.toReplicate, op)
 			} else {
 				// Start new goroutine for async put (may need to wait for more puts to be committed)
 				go func() {
@@ -486,6 +490,75 @@ func (kv *ShardKV) backgroundWorker() {
 		}
 		// DPrintf("%d-%d done processing commit\n", kv.gid, kv.me)
 		kv.mu.Unlock()
+	}
+}
+
+// Asynchronously replicates put operations
+func (kv *ShardKV) replicationWorker() {
+	for {
+		// If server has been killed, terminate this routine as well
+		if !kv.rf.IsAlive() {
+			return
+		}
+		// Check if there are any puts to replicate across wide-area
+		kv.mu.Lock()
+		if len(kv.toReplicate) > 0 {
+			// Pop first operation from queue
+			op := kv.toReplicate[0]
+			if len(kv.toReplicate) == 1 {
+				kv.toReplicate = []Op{}
+			} else {
+				kv.toReplicate = append([]Op{}, kv.toReplicate[1:]...)
+			}
+			// Replicate operation to other clusters
+			kv.mu.Unlock()
+			mu := sync.Mutex{}
+			count := 0
+			mu.Lock()
+			for c := 0; c < kv.nclusters; c++ {
+				// Iterate through each other cluster
+				if c != kv.cid {
+					// Find out latest configuration of other cluster
+					latestConf := kv.mcks[c].Query(-1)
+					// Figure out group in charge of key
+					shard := key2shard(op.Key)
+					gid := latestConf.Shards[shard]
+					group := latestConf.Groups[gid]
+					// Send PutAfter request to group until success
+					count += 1
+					go kv.replicateToCluster(op, group, &count, &mu)
+				}
+			}
+			// Wait until all replications are done
+			for count > 0 {
+				mu.Unlock()
+				time.Sleep(10 * time.Millisecond)
+				mu.Lock()
+			}
+		} else {
+			kv.mu.Unlock()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func (kv *ShardKV) replicateToCluster(op Op, group []string, count *int, mu *sync.Mutex) {
+	args := PutAfterArgs{ op.Key, op.Value, op.Nearest, op.Version, 0, 0 }
+	var reply PutAfterReply
+	for i := 0; ; {
+		srv := kv.make_end(group[i])
+		ok := srv.Call("ShardKV.PutAfter", &args, &reply)
+		if !ok || reply.WrongLeader {
+			i = (i + 1) % len(group)
+			continue
+		}
+		if reply.Err == OK {
+			mu.Lock()
+			*count -= 1
+			mu.Unlock()
+			return
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -753,8 +826,11 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.latestTimestamp = 1
 	kv.nodeID = uint32(nrand())
 
+	kv.toReplicate = []Op{}
+
 	go kv.backgroundWorker()
 	go kv.configPoller()
+	go kv.replicationWorker()
 	
 	DPrintf("shard %d server %d started. current config number %d\n", kv.gid, kv.me, kv.config.Num)
 
