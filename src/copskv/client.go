@@ -39,9 +39,11 @@ type Clerk struct {
 	sm       *copsmaster.Clerk
 	config   copsmaster.Config
 	make_end func(string) *labrpc.ClientEnd
-	// You will have to modify this struct.
+	
 	clientID      int64
 	nextCommandID uint8
+
+	metadata map[string]uint64 // key:version dependencies
 }
 
 //
@@ -62,6 +64,7 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.config = ck.sm.Query(-1)
 	ck.clientID = nrand()
 	ck.nextCommandID = 1
+	ck.metadata = make(map[string]uint64)
 	DPrintf("created clerk\n")
 	return ck
 }
@@ -74,7 +77,8 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 //
 func (ck *Clerk) Get(key string) string {
 	DPrintf("sending get request for key %s\n", key)
-	args := GetArgs{ key, ck.clientID, ck.nextCommandID }
+	// get_by_version(key, LATEST)
+	args := GetByVersionArgs{ key, 0, ck.clientID, ck.nextCommandID }
 	ck.nextCommandID += 1
 
 	for {
@@ -84,10 +88,14 @@ func (ck *Clerk) Get(key string) string {
 			// try each server for the shard.
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
-				var reply GetReply
-				ok := srv.Call("ShardKV.Get", &args, &reply)
+				var reply GetByVersionReply
+				ok := srv.Call("ShardKV.GetByVersion", &args, &reply)
 				if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey) {
 					DPrintf("get success")
+					// Save key:ver to metadata (nearest dependencies)
+					ck.metadata[key] = reply.Version
+					// TODO: never_depend garbage collection
+					// Return
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
@@ -104,13 +112,11 @@ func (ck *Clerk) Get(key string) string {
 	return ""
 }
 
-//
-// shared by Put and Append.
-// You will have to modify this function.
-//
-func (ck *Clerk) PutAppend(key string, value string, op string) {
-	DPrintf("sending putappend request for key %s\n", key)
-	args := PutAppendArgs{ key, value, op, ck.clientID, ck.nextCommandID }
+func (ck *Clerk) Put(key string, value string) bool {
+	DPrintf("sending put request for key %s\n", key)
+	nearest := ck.metadata
+	ck.metadata = make(map[string]uint64)
+	args := PutAfterArgs{ key, value, nearest, 0, ck.clientID, ck.nextCommandID }
 	ck.nextCommandID += 1
 
 	for {
@@ -120,17 +126,24 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if servers, ok := ck.config.Groups[gid]; ok {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
-				var reply PutAppendReply
-				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
+				var reply PutAfterReply
+				ok := srv.Call("ShardKV.PutAfter", &args, &reply)
 				if !ok {
-					DPrintf("putappend failed connection\n")
+					DPrintf("put failed connection\n")
 				}
 				if ok && reply.WrongLeader == false && reply.Err == OK {
-					DPrintf("putappend success\n")
-					return
+					DPrintf("put success\n")
+					// Return true or false, depending on reply.Err
+					if reply.Err == OK {
+						// Add put to metadata
+						ck.metadata[key] = reply.Version
+						return true
+					} else {
+						return false
+					}
 				}
 				if ok && reply.Err == ErrWrongGroup {
-					DPrintf("putappend failed wrong group\n")
+					DPrintf("put failed wrong group\n")
 					break
 				}
 			}
@@ -140,11 +153,4 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ck.config = ck.sm.Query(-1)
 		// DPrintf("config number %d\n", ck.config.Num)
 	}
-}
-
-func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
-}
-func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
 }

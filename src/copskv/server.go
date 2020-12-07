@@ -34,9 +34,8 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 
 const (
 	OpRegisterClient uint8 = iota
-	OpPut
-	OpAppend
-	OpGet
+	OpPutAfter
+	OpGetByVersion
 	OpConfigChange
 )
 
@@ -46,13 +45,16 @@ type Op struct {
 	Key string
 	Value string
 
+	Version uint64
+	Nearest map[string]uint64
+
 	ClientID int64
 	CommandID uint8
 
 	ConfigNum int
 
 	Config copsmaster.Config
-	ShardStore map[int]map[string]string
+	ShardStore map[int]map[string]Entry
 	LastApplied map[int64]CmdResults
 }
 
@@ -64,6 +66,7 @@ type ShardKV struct {
 
 	make_end     func(string) *labrpc.ClientEnd
 	gid          int
+	nodeID       uint32
 	masters      []*labrpc.ClientEnd
 	mck          *copsmaster.Clerk
 
@@ -78,7 +81,16 @@ type ShardKV struct {
 	lastAppliedIndex int // log index of last applied command
 
 	lastApplied map[int64]CmdResults
-	kvstore [copsmaster.NShards]map[string]string // keep a separate k-v store for each shard
+	kvstore [copsmaster.NShards]map[string]Entry // keep a separate k-v store for each shard
+
+	latestTimestamp uint32 // The latest timestamp witnessed
+}
+
+type Entry struct {
+	Version uint64 // higher bits lamport timestamp, lower bits node ID (cluster + group + node)
+	Value string
+	Deps map[string]uint64 // key:value
+	NeverDepend bool
 }
 
 type moveShards struct {
@@ -92,16 +104,32 @@ type CmdResults struct {
 	Key string
 	Value string
 	Err Err
+
+	Version uint64
+	Deps map[string]uint64
+	NeverDepend bool
 }
 
 type KVSnapshot struct {
 	LastApplied map[int64]CmdResults
-	KVStore [copsmaster.NShards]map[string]string
+	KVStore [copsmaster.NShards]map[string]Entry
 	LastAppliedIndex int
 }
 
+func (kv *ShardKV) lamportTimestamp() uint32 {
+	// TODO: implement a correct Lamport timestamp
+	kv.latestTimestamp += 1
+	return kv.latestTimestamp
+}
 
-func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
+func (kv *ShardKV) versionNumber() uint64 {
+	timestamp := uint64(kv.lamportTimestamp())
+	ver := timestamp << 32
+	ver = ver | uint64(kv.nodeID)
+	return ver
+}
+
+func (kv *ShardKV) GetByVersion(args *GetByVersionArgs, reply *GetByVersionReply) {
 	DPrintf("server %d-%d handling get\n", kv.gid, kv.me)
 	// If in the middle of a config change, hold
 	kv.mu.Lock()
@@ -133,6 +161,9 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 			reply.WrongLeader = false
 			reply.Err = lastApplied.Err
 			reply.Value = lastApplied.Value
+			reply.Version = lastApplied.Version
+			reply.Deps = lastApplied.Deps
+			reply.NeverDepend = lastApplied.NeverDepend
 			if reply.Err == OK {
 				DPrintf("%d-%d successfully returning Get %d-%d\n", kv.gid, kv.me, args.ClientID, args.CommandID)
 			} else {
@@ -143,12 +174,13 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	}
 	
 	createCommand := func() Op {
-		return Op { OpGet, args.Key, "", args.ClientID, args.CommandID, kv.config.Num, copsmaster.Config{}, map[int]map[string]string{}, map[int64]CmdResults{} }
+		return Op { OpGetByVersion, args.Key, "", args.Version, map[string]uint64{}, args.ClientID, args.CommandID,
+		            kv.config.Num, copsmaster.Config{}, map[int]map[string]Entry{}, map[int64]CmdResults{} }
 	}
 	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
 }
 
-func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *ShardKV) PutAfter(args *PutAfterArgs, reply *PutAfterReply) {
 	DPrintf("server %d-%d handling putappend\n", kv.gid, kv.me)
 	// If in the middle of a config change, hold
 	kv.mu.Lock()
@@ -179,18 +211,15 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		if ok && lastApplied.Cmd.CommandID == args.CommandID {
 			reply.WrongLeader = false
 			reply.Err = lastApplied.Err
+			reply.Version = lastApplied.Version
 			DPrintf("ShardKV %d successfully returning PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
 			return true
 		} else { return false }
 	}
 	
 	createCommand := func() Op {
-		command := Op { 0, args.Key, args.Value, args.ClientID, args.CommandID, kv.config.Num, copsmaster.Config{}, map[int]map[string]string{}, map[int64]CmdResults{} }
-		if args.Op == "Put" {
-			command.Type = OpPut
-		} else {
-			command.Type = OpAppend
-		}
+		command := Op { OpPutAfter, args.Key, args.Value, args.Version, args.Nearest, args.ClientID, args.CommandID,
+			            kv.config.Num, copsmaster.Config{}, map[int]map[string]Entry{}, map[int64]CmdResults{} }
 		return command
 	}
 	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
@@ -247,7 +276,7 @@ func (kv *ShardKV) GetShard(args *GetShardArgs, reply *GetShardReply) {
 	} else {
 		reply.Err = OK
 		// Return a copy of the shard
-		copyOfShard := make(map[string]string)
+		copyOfShard := make(map[string]Entry)
 		for k, v := range kv.kvstore[args.Shard] {
 			copyOfShard[k] = v
 		}
@@ -278,44 +307,29 @@ func (kv *ShardKV) readApplyCh() (raft.ApplyMsg, bool) {
 // Apply a committed command to local state
 func (kv *ShardKV) apply(op Op) {
 	switch op.Type {
-	case OpGet:
+	case OpGetByVersion:
 		shard := key2shard(op.Key)
 		// If shard not accepted, return error
 		if !kv.accepted[shard] {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup }
+			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup, 0, map[string]uint64{}, false }
 			return
 		}
-		val, ok := kv.kvstore[shard][op.Key]
+		entry, ok := kv.kvstore[shard][op.Key]
 		if ok {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, val, OK }
+			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, entry.Value, OK, entry.Version, entry.Deps, entry.NeverDepend }
 		} else {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrNoKey }
+			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrNoKey, 0, map[string]uint64{}, false }
 		}
-	case OpPut:
+	case OpPutAfter:
 		shard := key2shard(op.Key)
 		if !kv.accepted[shard] {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup }
+			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup, 0, map[string]uint64{}, false }
 			return
 		}
 		if kv.lastApplied[op.ClientID].Cmd.CommandID != op.CommandID {
-			kv.kvstore[shard][op.Key] = op.Value
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK }
-		}
-	case OpAppend:
-		shard := key2shard(op.Key)
-		// If shard not accepted, return error
-		if !kv.accepted[shard] {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup }
-			return
-		}
-		if kv.lastApplied[op.ClientID].Cmd.CommandID != op.CommandID {
-			val, ok := kv.kvstore[shard][op.Key]
-			if ok {
-				kv.kvstore[shard][op.Key] = val + op.Value
-				kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK }
-			} else {
-				kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrNoKey }
-			}
+			version := kv.versionNumber()
+			kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
+			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK, version, op.Nearest, false }
 		}
 	case OpConfigChange:
 		kv.applyConfigChange(op.ConfigNum, op.ShardStore, op.LastApplied, op.Config)
@@ -331,7 +345,7 @@ func (kv *ShardKV) applySnapshot(snapshot KVSnapshot) {
 	kv.lastAppliedIndex = snapshot.LastAppliedIndex
 }
 
-func (kv *ShardKV) applyConfigChange(configNum int, shardstore map[int]map[string]string, lastApplied map[int64]CmdResults, newConfig copsmaster.Config) {
+func (kv *ShardKV) applyConfigChange(configNum int, shardstore map[int]map[string]Entry, lastApplied map[int64]CmdResults, newConfig copsmaster.Config) {
 	DPrintf("aa\n")
 	// If config change already applied, return
 	if kv.config.Num >= configNum {
@@ -446,7 +460,7 @@ func (kv *ShardKV) configChange() {
 func (kv *ShardKV) retrieveShards(newconfig copsmaster.Config, toreceive []int) {
 	// DPrintf("%d-%d in retrieveShards\n", kv.gid, kv.me)
 	// Start routines to request shards from other groups
-	shards := make(map[int]map[string]string)
+	shards := make(map[int]map[string]Entry)
 	lastApplied := make(map[int64]CmdResults)
 	ntorecv := len(toreceive)
 	for _, shard := range toreceive {
@@ -467,7 +481,8 @@ func (kv *ShardKV) retrieveShards(newconfig copsmaster.Config, toreceive []int) 
 	}
 	// DPrintf("%d-%d out of loop\n", kv.gid, kv.me)
 	// When all shards have been received, add state change to log
-	cmd := Op{ OpConfigChange, "", "", 0, 0, kv.config.Num + 1, newconfig, shards, lastApplied }
+	cmd := Op{ OpConfigChange, "", "", 0, map[string]uint64{}, 0, 0,
+	           kv.config.Num + 1, newconfig, shards, lastApplied }
 	kv.mu.Unlock()
 	_, _, leader := kv.rf.Start(cmd)
 	kv.mu.Lock()
@@ -476,7 +491,7 @@ func (kv *ShardKV) retrieveShards(newconfig copsmaster.Config, toreceive []int) 
 	}
 }
 
-func (kv *ShardKV) retrieveShard(shard int, shards *map[int]map[string]string, lastApplied *map[int64]CmdResults, ntorecv *int) {
+func (kv *ShardKV) retrieveShard(shard int, shards *map[int]map[string]Entry, lastApplied *map[int64]CmdResults, ntorecv *int) {
 	kv.mu.Lock()
 	for *ntorecv > 0 {
 		kv.mu.Unlock()
@@ -492,7 +507,7 @@ func (kv *ShardKV) retrieveShard(shard int, shards *map[int]map[string]string, l
 		// If there is no previous group with the shard, just ignore
 		if gid == 0 {
 			*ntorecv -= 1
-			(*shards)[shard] = make(map[string]string)
+			(*shards)[shard] = make(map[string]Entry)
 			kv.mu.Unlock()
 			return
 		}
@@ -573,6 +588,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
 	labgob.Register(KVSnapshot{})
+	labgob.Register(Entry{})
 
 	kv := new(ShardKV)
 	kv.me = me
@@ -584,7 +600,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.lastAppliedIndex = 0
 	
 	for i := 0; i < copsmaster.NShards; i++ {
-		kv.kvstore[i] = make(map[string]string)
+		kv.kvstore[i] = make(map[string]Entry)
 		kv.accepted[i] = false
 	}
 	
@@ -597,6 +613,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+
+	kv.latestTimestamp = 1
+	kv.nodeID = uint32(nrand())
 
 	go kv.backgroundWorker()
 	go kv.configPoller()

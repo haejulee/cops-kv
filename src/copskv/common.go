@@ -18,33 +18,39 @@ const (
 
 type Err string
 
-// Put or Append
-type PutAppendArgs struct {
-	// You'll have to add definitions here.
+type PutAfterArgs struct {
 	Key   string
 	Value string
-	Op    string // "Put" or "Append"
+	Nearest map[string]uint64
+	Version uint64 // 0 for null
 	
 	ClientID  int64
 	CommandID uint8
 }
 
-type PutAppendReply struct {
+type PutAfterReply struct {
 	WrongLeader bool
 	Err         Err
+
+	Version     uint64
 }
 
-type GetArgs struct {
+type GetByVersionArgs struct {
 	Key string
+	Version uint64 // 0 for latest
 	
 	ClientID  int64
 	CommandID uint8
 }
 
-type GetReply struct {
+type GetByVersionReply struct {
 	WrongLeader bool
 	Err         Err
+
 	Value       string
+	Version     uint64
+	Deps        map[string]uint64
+	NeverDepend bool
 }
 
 type GetShardArgs struct {
@@ -54,6 +60,6 @@ type GetShardArgs struct {
 
 type GetShardReply struct {
 	Err Err
-	Shard map[string]string
+	Shard map[string]Entry
 	LastApplied map[int64]CmdResults
 }
