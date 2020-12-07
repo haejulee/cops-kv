@@ -393,17 +393,22 @@ func (kv *ShardKV) apply(op Op) {
 				kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
 				kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK, version, op.Nearest, false }
 			} else {
-				// If version specified, do async put routine before applying get
-				// 1. make sure dependencies are satisfied
-				kv.doDepChecks(op.Nearest)
-				// 2. update latest timestamp using given version
-				kv.updateTimestamp(vtot(version))
-				// Apply put operation, only if new version is higher than existing
-				entry, ok := kv.kvstore[shard][op.Key]
-				if !ok || vtot(entry.Version) < vtot(version) ||
-				   (vtot(entry.Version) == vtot(version) && uint32(entry.Version) < uint32(version)) {
-					kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
-				}
+				// Start new goroutine for async put (may need to wait for more puts to be committed)
+				go func() {
+					// If version specified, do async put routine before applying get
+					// 1. make sure dependencies are satisfied
+					kv.doDepChecks(op.Nearest)
+					// 2. update latest timestamp using given version
+					kv.mu.Lock()
+					kv.updateTimestamp(vtot(version))
+					// Apply put operation, only if new version is higher than existing
+					entry, ok := kv.kvstore[shard][op.Key]
+					if !ok || vtot(entry.Version) < vtot(version) ||
+					   (vtot(entry.Version) == vtot(version) && uint32(entry.Version) < uint32(version)) {
+						kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
+					}
+					kv.mu.Unlock()
+				}()
 			}
 		}
 	case OpConfigChange:
