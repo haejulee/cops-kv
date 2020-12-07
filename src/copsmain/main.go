@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"time"
 
 	"copskv"
 )
@@ -30,12 +31,20 @@ func main() {
 
 	//
 
-	Put("0", "abcd", clientA)
+	Put("0", "abcd", clientB)
 	res := Get("0", clientA)
 	fmt.Println(res)
-
+	
+	Put("0", "efgh", clientA)
 	res = Get("0", clientB)
 	fmt.Println(res)
+
+	time.Sleep(5000 * time.Millisecond)
+
+	res = Get("0", clientC)
+	fmt.Println(res)
+
+	time.Sleep(5000 * time.Millisecond)
 
 	res = Get("0", clientC)
 	fmt.Println(res)
