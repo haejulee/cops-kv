@@ -36,6 +36,7 @@ const (
 	OpRegisterClient uint8 = iota
 	OpPutAfter
 	OpGetByVersion
+	OpDepCheck
 	OpConfigChange
 )
 
@@ -114,6 +115,19 @@ type KVSnapshot struct {
 	LastApplied map[int64]CmdResults
 	KVStore [copsmaster.NShards]map[string]Entry
 	LastAppliedIndex int
+}
+
+// Returns true if v1 is at least as late as v2
+func versionUpToDate(v1, v2 uint64) bool {
+	// Convert to lamport timestamps
+	t1 := uint32(v1 >> 32)
+	t2 := uint32(v2 >> 32)
+	// compare timestamps
+	if t1 >= t2 {
+		return true
+	} else {
+		return false
+	}
 }
 
 func (kv *ShardKV) lamportTimestamp() uint32 {
@@ -259,6 +273,19 @@ func (kv *ShardKV) RPCHandler(setWrongLeader func(),
 		}
 		// Yield lock to let background routine apply commands
 		time.Sleep(time.Duration(1000000))
+	}
+}
+
+func (kv *ShardKV) DepCheck(args *DepCheckArgs, reply *DepCheckReply) {
+	// TODO: make sure node is the primary of key
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	shard := key2shard(args.Key)
+	entry := kv.kvstore[shard][args.Key]
+	if versionUpToDate(entry.Version, args.Version) {
+		reply.Ok = true
+	} else {
+		reply.Ok = false
 	}
 }
 

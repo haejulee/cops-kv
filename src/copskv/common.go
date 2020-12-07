@@ -63,3 +63,12 @@ type GetShardReply struct {
 	Shard map[string]Entry
 	LastApplied map[int64]CmdResults
 }
+
+type DepCheckArgs struct {
+	Key string
+	Version uint64
+}
+
+type DepCheckReply struct {
+	Ok bool
+}
