@@ -13,6 +13,7 @@ const (
 	OK            = "OK"
 	ErrNoKey      = "ErrNoKey"
 	ErrWrongGroup = "ErrWrongGroup"
+	ErrNotLeader  = "ErrNotLeader"
 )
 
 type Err string
@@ -44,4 +45,15 @@ type GetReply struct {
 	WrongLeader bool
 	Err         Err
 	Value       string
+}
+
+type GetShardArgs struct {
+	ConfigNum int
+	Shard     int
+}
+
+type GetShardReply struct {
+	Err Err
+	Shard map[string]string
+	LastApplied map[int64]CmdResults
 }

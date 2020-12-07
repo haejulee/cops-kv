@@ -87,9 +87,11 @@ func (ck *Clerk) Get(key string) string {
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey) {
+					DPrintf("get success")
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
+					DPrintf("get failed wrong group")
 					break
 				}
 			}
@@ -114,19 +116,21 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
-		DPrintf("key %s has shard %d, for gid %d\n", key, shard, gid)
+		// DPrintf("key %s has shard %d, for gid %d\n", key, shard, gid)
 		if servers, ok := ck.config.Groups[gid]; ok {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if !ok {
-					DPrintf("putappend failed\n")
+					DPrintf("putappend failed connection\n")
 				}
 				if ok && reply.WrongLeader == false && reply.Err == OK {
+					DPrintf("putappend success\n")
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
+					DPrintf("putappend failed wrong group\n")
 					break
 				}
 			}
@@ -134,7 +138,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		time.Sleep(100 * time.Millisecond)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
-		DPrintf("config number %d\n", ck.config.Num)
+		// DPrintf("config number %d\n", ck.config.Num)
 	}
 }
 
