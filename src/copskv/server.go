@@ -92,6 +92,7 @@ type ShardKV struct {
 	latestTimestamp uint32 // The latest timestamp witnessed
 
 	toReplicate  []Op
+	asyncputmu   sync.Mutex
 }
 
 type Entry struct {
@@ -219,7 +220,7 @@ func (kv *ShardKV) GetByVersion(args *GetByVersionArgs, reply *GetByVersionReply
 	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
 }
 
-func (kv *ShardKV) PutAfter(args *PutAfterArgs, reply *PutAfterReply) {
+func (kv *ShardKV) PutAfterHandler(args *PutAfterArgs, reply *PutAfterReply) {
 	DPrintf("server %d-%d handling putappend\n", kv.gid, kv.me)
 	// If in the middle of a config change, hold
 	kv.mu.Lock()
@@ -228,6 +229,7 @@ func (kv *ShardKV) PutAfter(args *PutAfterArgs, reply *PutAfterReply) {
 		time.Sleep(50 * time.Millisecond)
 		kv.mu.Lock()
 	}
+	DPrintf("QQQ")
 	// Make sure key is in shard
 	if kv.config.Shards[key2shard(args.Key)] != kv.gid {
 		DPrintf("incorrect shard\n")
@@ -237,6 +239,7 @@ func (kv *ShardKV) PutAfter(args *PutAfterArgs, reply *PutAfterReply) {
 		return
 	}
 	kv.mu.Unlock()
+	DPrintf("WWW")
 
 	setWrongLeader := func() {
 		DPrintf("ShardKV %d WrongLeader PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
@@ -261,10 +264,55 @@ func (kv *ShardKV) PutAfter(args *PutAfterArgs, reply *PutAfterReply) {
 			            kv.config.Num, copsmaster.Config{}, map[int]map[string]Entry{}, map[int64]CmdResults{} }
 		return command
 	}
+
+	DPrintf("EEE")
 	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
 }
 
-// Code shared by Get and PutAppend RPC handlers
+func (kv *ShardKV) PutAfter(args *PutAfterArgs, reply *PutAfterReply) {
+	// If version is nil, synchronous put_after -> immediately commit put
+	if args.Version == 0 {
+		kv.PutAfterHandler(args, reply)
+		return
+	}
+	// Else, handle async put_after -> commit after dependencies met
+	DPrintf("%d-%d-%d Received async PutAfter\n", kv.cid, kv.gid, kv.me)
+
+	// If not leader, return
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		reply.WrongLeader = true
+		return
+	}
+	// If in the middle of a config change, hold
+	kv.mu.Lock()
+	for kv.initiatedConfigChange {
+		kv.mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		kv.mu.Lock()
+	}
+	// Make sure key is in shard
+	if kv.config.Shards[key2shard(args.Key)] != kv.gid {
+		DPrintf("incorrect shard\n")
+		reply.WrongLeader = false
+		reply.Err = ErrWrongGroup
+		kv.mu.Unlock()
+		return
+	}
+	
+	// Make sure dependencies are met
+	DPrintf("%d-%d-%d Doing dependency checks\n", kv.cid, kv.gid, kv.me)
+	kv.mu.Unlock()
+	kv.doDepChecks(args.Nearest)
+	
+	// Once dependencies are met, commit put
+	DPrintf("%d-%d-%d Committing async PutAfter\n", kv.cid, kv.gid, kv.me)
+	kv.asyncputmu.Lock()
+	kv.PutAfterHandler(args, reply)
+	kv.asyncputmu.Unlock()
+	DPrintf("%d-%d-%d Returning async PutAfter\n", kv.cid, kv.gid, kv.me)
+}
+
+// Code shared by GetByVersion and PutAfter RPC handlers
 func (kv *ShardKV) RPCHandler(setWrongLeader func(),
 							   lastAppliedMatch func() bool,
 							   createCommand func() Op) {
@@ -286,6 +334,7 @@ func (kv *ShardKV) RPCHandler(setWrongLeader func(),
 		return
 	}
 	// Read applyCh until 1st occurrence of the request
+	DPrintf("RRR")
 	for {
 		// If matching command applied, return
 		if (lastAppliedMatch()) {
@@ -297,7 +346,8 @@ func (kv *ShardKV) RPCHandler(setWrongLeader func(),
 			break
 		}
 		// Yield lock to let background routine apply commands
-		time.Sleep(time.Duration(1000000))
+		DPrintf("%d-%d-%d PPP", kv.cid, kv.gid, kv.me)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -366,6 +416,7 @@ func (kv *ShardKV) readApplyCh() (raft.ApplyMsg, bool) {
 
 // Apply a committed command to local state
 func (kv *ShardKV) apply(op Op) {
+	DPrintf("%d-%d-%d applying operation", kv.cid, kv.gid, kv.me)
 	switch op.Type {
 	case OpGetByVersion:
 		shard := key2shard(op.Key)
@@ -394,25 +445,24 @@ func (kv *ShardKV) apply(op Op) {
 				version = kv.versionNumber()
 				kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
 				kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK, version, op.Nearest, false }
-				// Append put operation to replication queue
+				// Append put operation with the generated version number to replication queue
+				DPrintf("%d-%d-%d adding to toReplicate", kv.cid, kv.gid, kv.me)
+				op.Version = version
 				kv.toReplicate = append(kv.toReplicate, op)
 			} else {
-				// Start new goroutine for async put (may need to wait for more puts to be committed)
-				go func() {
-					// If version specified, do async put routine before applying get
-					// 1. make sure dependencies are satisfied
-					kv.doDepChecks(op.Nearest)
-					// 2. update latest timestamp using given version
-					kv.mu.Lock()
-					kv.updateTimestamp(vtot(version))
-					// Apply put operation, only if new version is higher than existing
-					entry, ok := kv.kvstore[shard][op.Key]
-					if !ok || vtot(entry.Version) < vtot(version) ||
-					   (vtot(entry.Version) == vtot(version) && uint32(entry.Version) < uint32(version)) {
-						kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
-					}
-					kv.mu.Unlock()
-				}()
+				// If version specified,
+				// update latest timestamp using given version
+				kv.updateTimestamp(vtot(version))
+				// Apply put operation, only if new version is higher than existing
+				entry, ok := kv.kvstore[shard][op.Key]
+				DPrintf("async put %s:%s", op.Key, op.Value)
+				if !ok || vtot(entry.Version) < vtot(version) ||
+					(vtot(entry.Version) == vtot(version) && uint32(entry.Version) < uint32(version)) {
+					DPrintf("writing async put %s:%s", op.Key, op.Value)
+					kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
+					kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK, version, op.Nearest, false }
+				}
+				DPrintf("CCC")
 			}
 		}
 	case OpConfigChange:
@@ -505,6 +555,7 @@ func (kv *ShardKV) replicationWorker() {
 		if len(kv.toReplicate) > 0 {
 			// Pop first operation from queue
 			op := kv.toReplicate[0]
+			DPrintf("%d-%d-%d replicating op", kv.cid, kv.gid, kv.me, op)
 			if len(kv.toReplicate) == 1 {
 				kv.toReplicate = []Op{}
 			} else {
@@ -515,6 +566,7 @@ func (kv *ShardKV) replicationWorker() {
 			mu := sync.Mutex{}
 			count := 0
 			mu.Lock()
+			DPrintf("XXX nclusters %d", kv.nclusters, kv.mcks)
 			for c := 0; c < kv.nclusters; c++ {
 				// Iterate through each other cluster
 				if c != kv.cid {
@@ -543,21 +595,30 @@ func (kv *ShardKV) replicationWorker() {
 }
 
 func (kv *ShardKV) replicateToCluster(op Op, group []string, count *int, mu *sync.Mutex) {
-	args := PutAfterArgs{ op.Key, op.Value, op.Nearest, op.Version, 0, 0 }
-	var reply PutAfterReply
+	DPrintf("%d-%d-%d replicating op to other cluster", kv.cid, kv.gid, kv.me, op)
+	args := PutAfterArgs{ op.Key, op.Value, op.Nearest, op.Version, op.ClientID, op.CommandID }
 	for i := 0; ; {
 		srv := kv.make_end(group[i])
+		var reply PutAfterReply
 		ok := srv.Call("ShardKV.PutAfter", &args, &reply)
 		if !ok || reply.WrongLeader {
+			if ok {
+				DPrintf("replicateToCluster: received wrong leader")
+			} else {
+				DPrintf("replicateToCluster: network error")
+			}
 			i = (i + 1) % len(group)
+			time.Sleep(time.Millisecond)
 			continue
 		}
 		if reply.Err == OK {
+			DPrintf("replicateToCluster: success")
 			mu.Lock()
 			*count -= 1
 			mu.Unlock()
 			return
 		}
+		DPrintf("replicateToCluster: received error")
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -793,6 +854,10 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	labgob.Register(Op{})
 	labgob.Register(KVSnapshot{})
 	labgob.Register(Entry{})
+	labgob.Register(PutAfterReply{})
+	labgob.Register(GetByVersionReply{})
+	labgob.Register(GetShardReply{})
+	labgob.Register(DepCheckReply{})
 
 	kv := new(ShardKV)
 	kv.me = me
@@ -801,6 +866,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.gid = gid
 	kv.cid = cid
 	kv.masters = masters[cid]
+	kv.nclusters = len(masters)
 
 	kv.lastAppliedIndex = 0
 	
@@ -812,7 +878,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.lastApplied = make(map[int64]CmdResults)
 
 	// Make a copsmaster clerk for each cluster
-	kv.mcks = make([]*copsmaster.Clerk, len(masters))
+	kv.mcks = make([]*copsmaster.Clerk, kv.nclusters)
 	for i, cluster := range masters {
 		kv.mcks[i] = copsmaster.MakeClerk(cluster)
 	}
