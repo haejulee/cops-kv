@@ -301,6 +301,14 @@ func (kv *ShardKV) RPCHandler(setWrongLeader func(),
 
 func (kv *ShardKV) DepCheck(args *DepCheckArgs, reply *DepCheckReply) {
 	// TODO: make sure node is the primary of key
+	// Make sure leader
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		reply.WrongLeader = true
+		return
+	}
+	// Do dependency check
+	reply.WrongLeader = false
+	// TODO: maybe make this check blocking until satisfied, as long as still leader
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	shard := key2shard(args.Key)
@@ -377,7 +385,19 @@ func (kv *ShardKV) apply(op Op) {
 			return
 		}
 		if kv.lastApplied[op.ClientID].Cmd.CommandID != op.CommandID {
-			version := kv.versionNumber()
+			// Determining version of put operation
+			version := op.Version
+			if version == 0 {
+				// If version argument was nil, generate new version number & apply immediately
+				version = kv.versionNumber()
+			} else {
+				// If version specified, do async put routine before applying get
+				// 1. make sure dependencies are satisfied
+				kv.doDepChecks(op.Nearest)
+				// 2. update latest timestamp using given version
+				kv.updateTimestamp(vtot(version))
+			}
+			// Apply put operation
 			kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
 			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK, version, op.Nearest, false }
 		}
@@ -590,6 +610,11 @@ func (kv *ShardKV) retrieveShard(shard int, shards *map[int]map[string]Entry, la
 		}
 	}
 	kv.mu.Unlock()
+}
+
+// Blocks until all dependencies in deps are satisfied in the cluster
+func (kv *ShardKV) doDepChecks(deps map[string]uint64) {
+	// TODO
 }
 
 //

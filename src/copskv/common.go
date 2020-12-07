@@ -70,5 +70,6 @@ type DepCheckArgs struct {
 }
 
 type DepCheckReply struct {
+	WrongLeader bool
 	Ok bool
 }
