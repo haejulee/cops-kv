@@ -133,7 +133,11 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 			reply.WrongLeader = false
 			reply.Err = lastApplied.Err
 			reply.Value = lastApplied.Value
-			DPrintf("ShardKV %d successfully returning Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
+			if reply.Err == OK {
+				DPrintf("%d-%d successfully returning Get %d-%d\n", kv.gid, kv.me, args.ClientID, args.CommandID)
+			} else {
+				DPrintf("%d-%d error returning Get %d-%d\n", kv.gid, kv.me, args.ClientID, args.CommandID)
+			}
 			return true
 		} else { return false }
 	}
@@ -262,7 +266,7 @@ func (kv *ShardKV) GetShard(args *GetShardArgs, reply *GetShardReply) {
 
 // Perform a max 3-second read from applyChannel
 func (kv *ShardKV) readApplyCh() (raft.ApplyMsg, bool) {
-	DPrintf("%d-%d reading from channel\n", kv.gid, kv.me)
+	// DPrintf("%d-%d reading from channel\n", kv.gid, kv.me)
 	select {
     case applyMsg := <-kv.applyCh:
 		return applyMsg, true
@@ -328,11 +332,12 @@ func (kv *ShardKV) applySnapshot(snapshot KVSnapshot) {
 }
 
 func (kv *ShardKV) applyConfigChange(configNum int, shardstore map[int]map[string]string, lastApplied map[int64]CmdResults, newConfig shardmaster.Config) {
-	DPrintf("applying config change\n")
+	DPrintf("aa\n")
 	// If config change already applied, return
 	if kv.config.Num >= configNum {
 		return
 	}
+	DPrintf("%d-%d applying config change\n", kv.gid, kv.me)
 	// Update kvstore & accepted
 	for shard, store := range shardstore {
 		kv.kvstore[shard] = store
@@ -352,10 +357,8 @@ func (kv *ShardKV) applyConfigChange(configNum int, shardstore map[int]map[strin
 	// Reset kv.initiatedConfigChange
 	kv.initiatedConfigChange = false
 	// Update config
-	DPrintf("aaa")
 	kv.config = newConfig
-	DPrintf("%d-%d finished applying config change to %d\n", kv.gid, kv.me, kv.config.Num)
-
+	DPrintf("%d-%d config changed to %d\n", kv.gid, kv.me, kv.config.Num)
 }
 
 // Periodically apply newly committed commands from applyCh
@@ -484,7 +487,7 @@ func (kv *ShardKV) retrieveShard(shard int, shards *map[int]map[string]string, l
 			return
 		}
 		kv.mu.Lock()
-		DPrintf("%d-%d retrieving shard %d\n", kv.gid, kv.me, shard)
+		// DPrintf("%d-%d retrieving shard %d\n", kv.gid, kv.me, shard)
 		gid := kv.config.Shards[shard]
 		// If there is no previous group with the shard, just ignore
 		if gid == 0 {
@@ -493,7 +496,7 @@ func (kv *ShardKV) retrieveShard(shard int, shards *map[int]map[string]string, l
 			kv.mu.Unlock()
 			return
 		}
-		DPrintf("%d-%d gid!=0\n", kv.gid, kv.me)
+		// DPrintf("%d-%d gid!=0\n", kv.gid, kv.me)
 		// Else, get shard from previous group
 		group := kv.config.Groups[gid]
 		args := GetShardArgs{ kv.config.Num, shard }
@@ -565,7 +568,7 @@ func (kv *ShardKV) Kill() {
 // for any long-running work.
 //
 func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, masters []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *ShardKV {
-	DPrintf("creating shard %d server %d\n", gid, me)
+	// DPrintf("creating shard %d server %d\n", gid, me)
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
@@ -589,7 +592,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	// Use something like this to talk to the shardmaster:
 	kv.mck = shardmaster.MakeClerk(kv.masters)
-	kv.config = kv.mck.Query(-1)
+	kv.config = kv.mck.Query(0)
 	kv.initiatedConfigChange = false
 
 	kv.applyCh = make(chan raft.ApplyMsg)
