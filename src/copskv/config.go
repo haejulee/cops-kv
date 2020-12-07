@@ -48,8 +48,8 @@ type group struct {
 	gid       int
 	servers   []*ShardKV
 	saved     []*raft.Persister
-	endnames  [][]string
-	mendnames [][]string
+	endnames  [][]string // ends from member i to member j inside group
+	mendnames [][][]string // ends from member i to cluster c's master j
 }
 
 func randstring(n int) string {
@@ -88,7 +88,7 @@ func MakeSystem() *Config {
 			gg.servers = make([]*ShardKV, cfg.n)
 			gg.saved = make([]*raft.Persister, cfg.n)
 			gg.endnames = make([][]string, cfg.n)
-			gg.mendnames = make([][]string, cfg.nmasters)
+			gg.mendnames = make([][][]string, cfg.n)
 			for i := 0; i < cfg.n; i++ {
 				cfg.StartServer(c, gi, i)
 			}
@@ -174,13 +174,17 @@ func (cfg *Config) StartServer(c int, gi int, i int) {
 		cfg.net.Enable(gg.endnames[i][j], true)
 	}
 
-	mends := make([]*labrpc.ClientEnd, cfg.nmasters)
-	gg.mendnames[i] = make([]string, cfg.nmasters)
-	for j := 0; j < cfg.nmasters; j++ {
-		gg.mendnames[i][j] = randstring(20)
-		mends[j] = cfg.net.MakeEnd(gg.mendnames[i][j])
-		cfg.net.Connect(gg.mendnames[i][j], cfg.mastername(c, j))
-		cfg.net.Enable(gg.mendnames[i][j], true)
+	mends := make([][]*labrpc.ClientEnd, cfg.nclusters)
+	gg.mendnames[i] = make([][]string, cfg.nclusters)
+	for cid := 0; cid < cfg.nclusters; cid++ {
+		mends[cid] = make([]*labrpc.ClientEnd, cfg.nmasters)
+		gg.mendnames[i][cid] = make([]string, cfg.nmasters)
+		for j := 0; j < cfg.nmasters; j++ {
+			gg.mendnames[i][cid][j] = randstring(20)
+			mends[cid][j] = cfg.net.MakeEnd(gg.mendnames[i][cid][j])
+			cfg.net.Connect(gg.mendnames[i][cid][j], cfg.mastername(cid, j))
+			cfg.net.Enable(gg.mendnames[i][cid][j], true)
+		}
 	}
 
 	if gg.saved[i] != nil {
@@ -191,7 +195,7 @@ func (cfg *Config) StartServer(c int, gi int, i int) {
 
 	cfg.mu.Unlock()
 
-	gg.servers[i] = StartServer(ends, i, gg.saved[i], cfg.maxraftstate, gg.gid, mends,
+	gg.servers[i] = StartServer(ends, i, gg.saved[i], cfg.maxraftstate, c, gg.gid, mends,
 		func(servername string) *labrpc.ClientEnd {
 			name := randstring(20)
 			end := cfg.net.MakeEnd(name)
@@ -239,8 +243,10 @@ func (cfg *Config) ShutdownServer(c int, gi int, i int) {
 		cfg.net.Enable(name, false)
 	}
 	for j := 0; j < len(gg.mendnames[i]); j++ {
-		name := gg.mendnames[i][j]
-		cfg.net.Enable(name, false)
+		for k := 0; k < len(gg.mendnames[i][j]); k++ {
+			name := gg.mendnames[i][j][k]
+			cfg.net.Enable(name, false)
+		}
 	}
 
 	cfg.net.DeleteServer(cfg.servername(c, gg.gid, i))

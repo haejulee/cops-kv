@@ -78,6 +78,11 @@ type ShardKV struct {
 	// configChanging bool // true if a config change has been initiated & isn't complete
 	// toreceive []int
 
+	cid          int // cluster ID
+	nclusters    int
+	configs      []copsmaster.Config // Other clusters' configurations
+	mcks         []*copsmaster.Clerk
+
 	maxraftstate int // snapshot if log grows this big
 	lastAppliedIndex int // log index of last applied command
 
@@ -603,13 +608,18 @@ func (kv *ShardKV) Kill() {
 // Config.Groups[gid][i] into a labrpc.ClientEnd on which you can
 // send RPCs. You'll need this to send RPCs to other groups.
 //
+// cid is the ID of the cluster
+// masters gives an array of arrays of ports of shardmasters of clusters
+// -> use it to create clerks of all clusters
+//
 // look at client.go for examples of how to use masters[]
 // and make_end() to send RPCs to the group owning a specific shard.
 //
 // StartServer() must return quickly, so it should start goroutines
 // for any long-running work.
 //
-func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, masters []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *ShardKV {
+func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
+	 maxraftstate, cid, gid int, masters [][]*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *ShardKV {
 	// DPrintf("creating shard %d server %d\n", gid, me)
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
@@ -622,7 +632,8 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.maxraftstate = maxraftstate
 	kv.make_end = make_end
 	kv.gid = gid
-	kv.masters = masters
+	kv.cid = cid
+	kv.masters = masters[cid]
 
 	kv.lastAppliedIndex = 0
 	
@@ -633,8 +644,12 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	
 	kv.lastApplied = make(map[int64]CmdResults)
 
-	// Use something like this to talk to the copsmaster:
-	kv.mck = copsmaster.MakeClerk(kv.masters)
+	// Make a copsmaster clerk for each cluster
+	kv.mcks = make([]*copsmaster.Clerk, len(masters))
+	for i, cluster := range masters {
+		kv.mcks[i] = copsmaster.MakeClerk(cluster)
+	}
+	kv.mck = kv.mcks[kv.cid]
 	kv.config = kv.mck.Query(0)
 	kv.initiatedConfigChange = false
 
