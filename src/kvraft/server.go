@@ -200,6 +200,7 @@ func (kv *KVServer) apply(op Op) {
 				kv.kvstore[op.Key] = val + op.Value
 				kv.lastApplied[op.ClientID] = CmdResults{ op, "", OK }
 			} else {
+				kv.kvstore[op.Key] = op.Value
 				kv.lastApplied[op.ClientID] = CmdResults{ op, "", ErrNoKey }
 			}
 		}
