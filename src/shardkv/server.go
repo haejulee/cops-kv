@@ -37,7 +37,8 @@ const (
 	OpPut
 	OpAppend
 	OpGet
-	OpConfigChange
+	OpConfChangePrep // stop accepting requests for keys not in next config
+	OpConfChange     // apply keys gained in next config to state - discard old config
 )
 
 
@@ -49,10 +50,9 @@ type Op struct {
 	ClientID int64
 	CommandID uint8
 
-	ConfigNum int
+	Config shardmaster.Config // for ConfChangePrep
 
-	Config shardmaster.Config
-	ShardStore map[int]map[string]string
+	ShardStore map[int]map[string]string // for ConfChange
 	LastApplied map[int64]CmdResults
 }
 
@@ -67,23 +67,16 @@ type ShardKV struct {
 	masters      []*labrpc.ClientEnd
 	mck          *shardmaster.Clerk
 
-	config       shardmaster.Config // Most recent config
-	accepted     [shardmaster.NShards]bool // all shards currently accepted
-	// tomove       map[int][]moveShards // gid : shards to move to gid in each reconfig
-	initiatedConfigChange bool
-	// configChanging bool // true if a config change has been initiated & isn't complete
-	// toreceive []int
+	interConf    bool // true if group is in between two configs
+	curConfig    shardmaster.Config // current config (old config if interConf true)
+	nextConfig   shardmaster.Config // new config, used when interConf true
+	accepted     [shardmaster.NShards]bool // to track which shards are currently accepted in the group
 
 	maxraftstate int // snapshot if log grows this big
 	lastAppliedIndex int // log index of last applied command
 
 	lastApplied map[int64]CmdResults
 	kvstore [shardmaster.NShards]map[string]string // keep a separate k-v store for each shard
-}
-
-type moveShards struct {
-	configNum int // config number corresponding to migration
-	shards []int // shards to migrate from one gid to another
 }
 
 type CmdResults struct {
@@ -98,31 +91,36 @@ type KVSnapshot struct {
 	LastApplied map[int64]CmdResults
 	KVStore [shardmaster.NShards]map[string]string
 	LastAppliedIndex int
+
+	InterConf bool
+	CurConfig  shardmaster.Config
+	NextConfig shardmaster.Config
+	Accepted   [shardmaster.NShards]bool
 }
 
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	DPrintf("server %d-%d handling get\n", kv.gid, kv.me)
-	// If in the middle of a config change, hold
-	kv.mu.Lock()
-	for kv.initiatedConfigChange {
-		kv.mu.Unlock()
-		time.Sleep(50 * time.Millisecond)
-		kv.mu.Lock()
-	}
-	// Make sure key is in shard
-	if kv.config.Shards[key2shard(args.Key)] != kv.gid {
-		DPrintf("incorrect shard\n")
-		reply.WrongLeader = false
-		reply.Err = ErrWrongGroup
-		kv.mu.Unlock()
-		return
-	}
-	kv.mu.Unlock()
 	
 	setWrongLeader := func() {
 		DPrintf("ShardKV %d WrongLeader Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
 		reply.WrongLeader = true
+	}
+
+	accepted := func() bool {
+		shard := key2shard(args.Key)
+		// Set ErrWrongGroup & return false if shard for key is not currently accepted
+		// within this group. This will be the case when
+		// A. the group isn't in charge of the shard in the current config
+		// B. the leader initiated a config change and the group isn't in charge of the shard in next config
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		if !kv.accepted[shard] {
+			reply.WrongLeader = false
+			reply.Err = ErrWrongGroup
+			return false
+		}
+		return true
 	}
 	
 	lastAppliedMatch := func() bool {
@@ -143,33 +141,42 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	}
 	
 	createCommand := func() Op {
-		return Op { OpGet, args.Key, "", args.ClientID, args.CommandID, kv.config.Num, shardmaster.Config{}, map[int]map[string]string{}, map[int64]CmdResults{} }
+		return Op {
+			Type: OpGet,
+			Key: args.Key,
+			// Value: "",
+			ClientID: args.ClientID,
+			CommandID: args.CommandID,
+			// Config: shardmaster.Config{},
+			// ShardStore: map[int]map[string]string{},
+			// LastApplied: map[int64]CmdResults{},
+		}
 	}
-	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
+	kv.RPCHandler(setWrongLeader, accepted, lastAppliedMatch, createCommand)
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	DPrintf("server %d-%d handling putappend\n", kv.gid, kv.me)
-	// If in the middle of a config change, hold
-	kv.mu.Lock()
-	for kv.initiatedConfigChange {
-		kv.mu.Unlock()
-		time.Sleep(50 * time.Millisecond)
-		kv.mu.Lock()
-	}
-	// Make sure key is in shard
-	if kv.config.Shards[key2shard(args.Key)] != kv.gid {
-		DPrintf("incorrect shard\n")
-		reply.WrongLeader = false
-		reply.Err = ErrWrongGroup
-		kv.mu.Unlock()
-		return
-	}
-	kv.mu.Unlock()
-
+	
 	setWrongLeader := func() {
 		DPrintf("ShardKV %d WrongLeader PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
 		reply.WrongLeader = true
+	}
+
+	accepted := func() bool {
+		shard := key2shard(args.Key)
+		// Set ErrWrongGroup & return false if shard for key is not currently accepted
+		// within this group. This will be the case when
+		// A. the group isn't in charge of the shard in the current config
+		// B. the leader initiated a config change and the group isn't in charge of the shard in next config
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		if !kv.accepted[shard] {
+			reply.WrongLeader = false
+			reply.Err = ErrWrongGroup
+			return false
+		}
+		return true
 	}
 	
 	lastAppliedMatch := func() bool {
@@ -185,7 +192,16 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 	
 	createCommand := func() Op {
-		command := Op { 0, args.Key, args.Value, args.ClientID, args.CommandID, kv.config.Num, shardmaster.Config{}, map[int]map[string]string{}, map[int64]CmdResults{} }
+		command := Op {
+			// Type: 0,
+			Key: args.Key,
+			Value: args.Value,
+			ClientID: args.ClientID,
+			CommandID: args.CommandID,
+			// Config: shardmaster.Config{},
+			// ShardStore: map[int]map[string]string{},
+			// LastApplied: map[int64]CmdResults{}
+		}
 		if args.Op == "Put" {
 			command.Type = OpPut
 		} else {
@@ -193,16 +209,21 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		}
 		return command
 	}
-	kv.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
+	kv.RPCHandler(setWrongLeader, accepted, lastAppliedMatch, createCommand)
 }
 
 // Code shared by Get and PutAppend RPC handlers
 func (kv *ShardKV) RPCHandler(setWrongLeader func(),
+								accepted func() bool,
 							   lastAppliedMatch func() bool,
 							   createCommand func() Op) {
 	// If not leader, return WrongLeader
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		setWrongLeader()
+		return
+	}
+	// If shard currently not accepted by group, return ErrWrongGroup
+	if !accepted() {
 		return
 	}
 	// If lastApplied has the command, return response
@@ -235,16 +256,23 @@ func (kv *ShardKV) RPCHandler(setWrongLeader func(),
 
 func (kv *ShardKV) GetShard(args *GetShardArgs, reply *GetShardReply) {
 	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	// Only respond if leader of the group
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		reply.Err = ErrNotLeader
-		kv.mu.Unlock()
 		return
 	}
-	if kv.config.Num < args.ConfigNum {
-		reply.Err = ErrWrongGroup
-	} else if kv.config.Num == args.ConfigNum && !kv.initiatedConfigChange {
+	if kv.curConfig.Num < args.ConfigNum {
+		// If not yet up to date with the config number
+		// of the shard being requested, return ErrNotReady
+		reply.Err = ErrNotReady
+	} else if kv.curConfig.Num == args.ConfigNum && !kv.interConf {
+		// If current config number is exactly that being requested,
+		// but the change to next config hasn't started yet in this group,
+		// also return ErrNotReady
 		reply.Err = ErrWrongGroup
 	} else {
+		// Otherwise, this group is ready to hand over the shard
 		reply.Err = OK
 		// Return a copy of the shard
 		copyOfShard := make(map[string]string)
@@ -261,7 +289,6 @@ func (kv *ShardKV) GetShard(args *GetShardArgs, reply *GetShardReply) {
 		}
 		reply.LastApplied = relevantLastApplied
 	}
-	kv.mu.Unlock()
 }
 
 // Perform a max 3-second read from applyChannel
@@ -314,11 +341,59 @@ func (kv *ShardKV) apply(op Op) {
 				kv.kvstore[shard][op.Key] = val + op.Value
 				kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK }
 			} else {
+				kv.kvstore[shard][op.Key] = op.Value
 				kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrNoKey }
 			}
 		}
-	case OpConfigChange:
-		kv.applyConfigChange(op.ConfigNum, op.ShardStore, op.LastApplied, op.Config)
+	case OpConfChangePrep:
+		// If currently at the config prior to given config
+		if kv.curConfig.Num == op.Config.Num - 1 {
+			// If not already in inter-config mode
+			if !kv.interConf {
+				// Go into inter-config mode & modify currently accepted shards
+				kv.interConf = true
+				// For each shard, set kv.accepted[shard] to false if no longer covered
+				// by current group in the new config.
+				for shard, accepted := range kv.accepted {
+					if accepted {
+						newgid := op.Config.Shards[shard]
+						if newgid != kv.gid {
+							kv.accepted[shard] = false
+						}
+					}
+				}
+				// Update next config
+				kv.nextConfig = op.Config
+			}
+		}
+	case OpConfChange:
+		// If already past this config change, ignore
+		if kv.curConfig.Num >= op.Config.Num {
+			return
+		}
+		// Write additions to kv.kvstore & kv.accepted
+		for shard, store := range op.ShardStore {
+			kv.kvstore[shard] = store
+			kv.accepted[shard] = true
+		}
+		// Write additions to kv.lastApplied
+		for clientID, cmdres := range op.LastApplied {
+			c, ok := kv.lastApplied[clientID]
+			if !ok {
+				// If there's no entry for clientID in kv.lastApplied, write
+				// received entry to kv.lastApplied[clientID]
+				kv.lastApplied[clientID] = cmdres
+			} else if cmdres.CommandID > c.CommandID {
+				// If the received entry is later than existing, overwrite
+				// received entry to kv.lastApplied[clientID]
+				kv.lastApplied[clientID] = cmdres
+			}
+		}
+		// Reset kv.interConf
+		kv.interConf = false
+		// Update current & next config
+		kv.curConfig = kv.nextConfig
+		kv.nextConfig = shardmaster.Config{}
 	default:
 		DPrintf("unrecognized operation\n")
 	}
@@ -329,36 +404,10 @@ func (kv *ShardKV) applySnapshot(snapshot KVSnapshot) {
 	kv.lastApplied = snapshot.LastApplied
 	kv.kvstore = snapshot.KVStore
 	kv.lastAppliedIndex = snapshot.LastAppliedIndex
-}
-
-func (kv *ShardKV) applyConfigChange(configNum int, shardstore map[int]map[string]string, lastApplied map[int64]CmdResults, newConfig shardmaster.Config) {
-	DPrintf("aa\n")
-	// If config change already applied, return
-	if kv.config.Num >= configNum {
-		return
-	}
-	DPrintf("%d-%d applying config change\n", kv.gid, kv.me)
-	// Update kvstore & accepted
-	for shard, store := range shardstore {
-		kv.kvstore[shard] = store
-		kv.accepted[shard] = true
-	}
-	// Update lastApplied
-	for clientID, cmdres := range lastApplied {
-		c, ok := kv.lastApplied[clientID]
-		if !ok {
-			// If there's no entry for clientID in kv.lastApplied, add
-			kv.lastApplied[clientID] = cmdres
-		} else if cmdres.CommandID > c.CommandID {
-			// If the received entry is later than existing, overwrite
-			kv.lastApplied[clientID] = cmdres
-		}
-	}
-	// Reset kv.initiatedConfigChange
-	kv.initiatedConfigChange = false
-	// Update config
-	kv.config = newConfig
-	DPrintf("%d-%d config changed to %d\n", kv.gid, kv.me, kv.config.Num)
+	kv.interConf = snapshot.InterConf
+	kv.curConfig = snapshot.CurConfig
+	kv.nextConfig = snapshot.NextConfig
+	kv.accepted = snapshot.Accepted
 }
 
 // Periodically apply newly committed commands from applyCh
@@ -387,7 +436,15 @@ func (kv *ShardKV) backgroundWorker() {
 		}
 		// Check if it's time for a snapshot
 		if kv.rf.StateSizeLimitReached(kv.maxraftstate) {
-			snapshot := KVSnapshot{ kv.lastApplied, kv.kvstore, kv.lastAppliedIndex }
+			snapshot := KVSnapshot{
+				kv.lastApplied,
+				kv.kvstore,
+				kv.lastAppliedIndex,
+				kv.interConf,
+				kv.curConfig,
+				kv.nextConfig,
+				kv.accepted,
+			}
 			kv.rf.Snapshot(snapshot, kv.lastAppliedIndex)
 		}
 		// DPrintf("%d-%d done processing commit\n", kv.gid, kv.me)
@@ -395,84 +452,127 @@ func (kv *ShardKV) backgroundWorker() {
 	}
 }
 
-// Polls shardmaster for config changes every 100 milliseconds
-func (kv *ShardKV) configPoller() {
+// When leader, periodically handles config changes
+// A) checks for config updates to start new config changes
+// B) checks for started config changes to complete them
+func (kv *ShardKV) configWorker() {
 	for {
 		// If server has been killed, terminate this routine as well
 		if !kv.rf.IsAlive() {
 			return
 		}
-		// If leader, check for config updates
-		if _, isLeader := kv.rf.GetState(); isLeader && !kv.initiatedConfigChange {
-			// Query config
-			newestconfig := kv.mck.Query(-1)
-			kv.mu.Lock()
-			if newestconfig.Num > kv.config.Num && !kv.initiatedConfigChange {
-				DPrintf("server %d-%d: config updated to %d\n", kv.gid, kv.me, newestconfig.Num)
-				kv.configChange()
-			}
+		// If not leader, do nothing
+		if _, isLeader := kv.rf.GetState(); !isLeader {
+			goto Sleep
+		}
+		// Acquire lock to check if group is in inter-config mode
+		kv.mu.Lock()
+		if kv.interConf { // If inter-config, retrieve new shards to complete transfer
+			kv.executeConfigChange()
+			continue
+		} else { // If not inter-config, check for config updates
+			// Save current config num before unlocking
+			curConfNum := kv.curConfig.Num
 			kv.mu.Unlock()
-		}
-		// Sleep for 100 milliseconds
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func (kv *ShardKV) configChange() {
-	kv.initiatedConfigChange = true
-	// Retrieve next config to change to
-	newconfig := kv.mck.Query(kv.config.Num + 1)
-	// Figure out shards to send & remove them from accepted
-	for shard, accepted := range kv.accepted {
-		if accepted {
-			newgid := newconfig.Shards[shard]
-			if newgid != kv.gid {
-				// Remove shard from kv.accepted to stop processing requests for it
-				kv.accepted[shard] = false
+			// If latest config is greater than group's current config
+			// initiate new config change
+			if kv.mck.Query(-1).Num > curConfNum {
+				kv.initiateConfigChange(curConfNum)
 			}
 		}
+		Sleep:
+		// Sleep for 90 milliseconds
+		time.Sleep(90 * time.Millisecond)
 	}
-	// Figure out shards to receive
-	toreceive := []int{} // array of shards to receive to fully transition to next config
-	for shard, gid := range newconfig.Shards {
-		if gid == kv.gid && !kv.accepted[shard] {
-			toreceive = append(toreceive, shard)
-		}
-	}
-	// Request shards to be added to this group
-	kv.retrieveShards(newconfig, toreceive)
 }
 
-func (kv *ShardKV) retrieveShards(newconfig shardmaster.Config, toreceive []int) {
-	// DPrintf("%d-%d in retrieveShards\n", kv.gid, kv.me)
-	// Start routines to request shards from other groups
+// Lock not held when called
+func (kv *ShardKV) initiateConfigChange(curConfNum int) {
+	// Start consensus on initiating change to next config
+	nextConfig := kv.mck.Query(curConfNum + 1)
+	cmd := Op {
+		Type: OpConfChangePrep,
+		Config: nextConfig,
+	}
+	_, term, isLeader := kv.rf.Start(cmd)
+	if !isLeader {
+		return
+	}
+	// Wait until config change initiated or no longer leader
+	for {
+		// If switched to inter-config mode, break
+		kv.mu.Lock()
+		if kv.interConf {
+			kv.mu.Unlock()
+			break
+		}
+		kv.mu.Unlock()
+		// If in different term / no longer leader, also break
+		if t, l := kv.rf.GetState(); !l || t != term {
+			break
+		}
+		// Sleep to let other routines run
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Lock held when called, not held when returns
+func (kv *ShardKV) executeConfigChange() {
+	// Initialize structures to store incoming shard info
 	shards := make(map[int]map[string]string)
 	lastApplied := make(map[int64]CmdResults)
-	ntorecv := len(toreceive)
-	for _, shard := range toreceive {
+	// Compare cur & next config to find which shards need to be received
+	newShards := []int{}
+	for i := 0; i < shardmaster.NShards; i++ {
+		// If a shard is not owned by group in cur config
+		// but owned by group in next config, add to newShards
+		if kv.curConfig.Shards[i] != kv.gid &&
+		   kv.nextConfig.Shards[i] == kv.gid {
+			newShards = append(newShards, i)
+		}
+	}
+	// Start routines to request shards from other groups
+	ntorecv := len(newShards)
+	for _, shard := range newShards {
 		go kv.retrieveShard(shard, &shards, &lastApplied, &ntorecv)
 	}
 	// Wait until all shards have been received
 	for ntorecv > 0 {
 		kv.mu.Unlock()
-		// DPrintf("%d-%d sleeping\n", kv.gid, kv.me)
 		time.Sleep(10 * time.Millisecond)
-		// DPrintf("%d-%d woke up\n", kv.gid, kv.me, toreceive)
 		if !kv.rf.IsAlive() {
-			// DPrintf("%d-%d dead boi\n", kv.gid, kv.me)
 			kv.mu.Lock()
 			return
 		}
 		kv.mu.Lock()
 	}
-	// DPrintf("%d-%d out of loop\n", kv.gid, kv.me)
-	// When all shards have been received, add state change to log
-	cmd := Op{ OpConfigChange, "", "", 0, 0, kv.config.Num + 1, newconfig, shards, lastApplied }
+	// Commit config change to log to apply it to whole group
+	cmd := Op {
+		Type: OpConfChange,
+		Config: kv.nextConfig,
+		ShardStore: shards,
+		LastApplied: lastApplied,
+	}
+	nextConfNum := kv.nextConfig.Num
 	kv.mu.Unlock()
-	_, _, leader := kv.rf.Start(cmd)
-	kv.mu.Lock()
-	if !leader {
+	_, term, isLeader := kv.rf.Start(cmd)
+	if !isLeader {
 		return
+	}
+	// Wait until config change applied or no longer leader for term
+	for {
+		time.Sleep(10 * time.Millisecond)
+		// If no longer leader for term, break
+		if t, l := kv.rf.GetState(); !l || t != term {
+			break
+		}
+		// If config change succeeded, break
+		kv.mu.Lock()
+		if kv.curConfig.Num == nextConfNum {
+			kv.mu.Unlock()
+			break
+		}
+		kv.mu.Unlock()
 	}
 }
 
@@ -488,7 +588,7 @@ func (kv *ShardKV) retrieveShard(shard int, shards *map[int]map[string]string, l
 		}
 		kv.mu.Lock()
 		// DPrintf("%d-%d retrieving shard %d\n", kv.gid, kv.me, shard)
-		gid := kv.config.Shards[shard]
+		gid := kv.curConfig.Shards[shard]
 		// If there is no previous group with the shard, just ignore
 		if gid == 0 {
 			*ntorecv -= 1
@@ -498,8 +598,8 @@ func (kv *ShardKV) retrieveShard(shard int, shards *map[int]map[string]string, l
 		}
 		// DPrintf("%d-%d gid!=0\n", kv.gid, kv.me)
 		// Else, get shard from previous group
-		group := kv.config.Groups[gid]
-		args := GetShardArgs{ kv.config.Num, shard }
+		group := kv.curConfig.Groups[gid]
+		args := GetShardArgs{ kv.curConfig.Num, shard }
 		for i := 0; i < len(group); i = (i + 1) % len(group) {
 			srv := kv.make_end(group[i])
 			var reply GetShardReply
@@ -592,16 +692,17 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	// Use something like this to talk to the shardmaster:
 	kv.mck = shardmaster.MakeClerk(kv.masters)
-	kv.config = kv.mck.Query(0)
-	kv.initiatedConfigChange = false
+	kv.curConfig = kv.mck.Query(0)
+	kv.nextConfig = shardmaster.Config{}
+	kv.interConf = false
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	go kv.backgroundWorker()
-	go kv.configPoller()
+	go kv.configWorker()
 	
-	DPrintf("shard %d server %d started. current config number %d\n", kv.gid, kv.me, kv.config.Num)
+	DPrintf("shard %d server %d started. current config number %d\n", kv.gid, kv.me, kv.curConfig.Num)
 
 	return kv
 }
