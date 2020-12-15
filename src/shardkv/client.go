@@ -73,7 +73,7 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // You will have to modify this function.
 //
 func (ck *Clerk) Get(key string) string {
-	DPrintf("sending get request for key %s\n", key)
+	// DPrintf("sending get request for key %s\n", key)
 	args := GetArgs{ key, ck.clientID, ck.nextCommandID }
 	ck.nextCommandID += 1
 
@@ -87,18 +87,23 @@ func (ck *Clerk) Get(key string) string {
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey) {
-					DPrintf("get success")
+					// DPrintf("get success")
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
-					DPrintf("get failed wrong group")
+					// DPrintf("get failed wrong group")
 					break
 				}
 			}
 		}
+		// Increment command ID to try again after receiving wrong group or failing to reach group
+		args.CommandID = ck.nextCommandID
+		ck.nextCommandID += 1
+		// Sleep
 		time.Sleep(100 * time.Millisecond)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
+		DPrintf("config", ck.config)
 	}
 
 	return ""
@@ -109,7 +114,7 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	DPrintf("sending putappend request for key %s\n", key)
+	// DPrintf("sending putappend request for key %s\n", key)
 	args := PutAppendArgs{ key, value, op, ck.clientID, ck.nextCommandID }
 	ck.nextCommandID += 1
 
@@ -122,23 +127,24 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				srv := ck.make_end(servers[si])
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
-				if !ok {
-					DPrintf("putappend failed connection\n")
-				}
 				if ok && reply.WrongLeader == false && reply.Err == OK {
-					DPrintf("putappend success\n")
+					// DPrintf("putappend success\n")
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
-					DPrintf("putappend failed wrong group\n")
+					// DPrintf("putappend failed wrong group\n")
 					break
 				}
 			}
 		}
+		// Increment command ID to try again after receiving wrong group
+		args.CommandID = ck.nextCommandID
+		ck.nextCommandID += 1
+		// Sleep
 		time.Sleep(100 * time.Millisecond)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
-		// DPrintf("config number %d\n", ck.config.Num)
+		DPrintf("config", ck.config)
 	}
 }
 
