@@ -28,6 +28,8 @@ type PutAppendArgs struct {
 	
 	ClientID  int64
 	CommandID uint8
+
+	ConfigNum int
 }
 
 type PutAppendReply struct {
@@ -40,6 +42,8 @@ type GetArgs struct {
 	
 	ClientID  int64
 	CommandID uint8
+
+	ConfigNum int
 }
 
 type GetReply struct {

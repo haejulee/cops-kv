@@ -49,6 +49,7 @@ type Op struct {
 
 	ClientID int64
 	CommandID uint8
+	ConfigNum int
 
 	Config shardmaster.Config // for ConfChangePrep
 
@@ -100,24 +101,33 @@ type KVSnapshot struct {
 
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
-	DPrintf("server %d-%d handling get\n", kv.gid, kv.me)
+	// DPrintf("server %d-%d handling get\n", kv.gid, kv.me)
 	
 	setWrongLeader := func() {
-		DPrintf("ShardKV %d WrongLeader Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
+		// DPrintf("ShardKV %d WrongLeader Get %d-%d\n", kv.me, args.ClientID, args.CommandID)
 		reply.WrongLeader = true
 	}
 
 	accepted := func() bool {
-		shard := key2shard(args.Key)
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		// Set ErrWrongGroup & return false if not yet at or transitioning to the
+		// config num specified in the request.
+		if kv.curConfig.Num != args.ConfigNum &&
+		   (!kv.interConf || kv.nextConfig.Num != args.ConfigNum) {
+			reply.WrongLeader = false
+			reply.Err = ErrWrongGroup
+			return false
+		}
 		// Set ErrWrongGroup & return false if shard for key is not currently accepted
 		// within this group. This will be the case when
 		// A. the group isn't in charge of the shard in the current config
 		// B. the leader initiated a config change and the group isn't in charge of the shard in next config
-		kv.mu.Lock()
-		defer kv.mu.Unlock()
+		shard := key2shard(args.Key)
 		if !kv.accepted[shard] {
 			reply.WrongLeader = false
 			reply.Err = ErrWrongGroup
+			DPrintf("%d-%d error returning Get %s %d-%d - Wrong group\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
 			return false
 		}
 		return true
@@ -133,8 +143,10 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 			reply.Value = lastApplied.Value
 			if reply.Err == OK {
 				DPrintf("%d-%d successfully returning Get %d-%d\n", kv.gid, kv.me, args.ClientID, args.CommandID)
-			} else {
-				DPrintf("%d-%d error returning Get %d-%d\n", kv.gid, kv.me, args.ClientID, args.CommandID)
+			} else if reply.Err == ErrNotLeader {
+				DPrintf("%d-%d error returning Get %s %d-%d - Not leader\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
+			} else if reply.Err == ErrWrongGroup {
+				DPrintf("%d-%d error returning Get %s %d-%d - Wrong group\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
 			}
 			return true
 		} else { return false }
@@ -144,36 +156,42 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		return Op {
 			Type: OpGet,
 			Key: args.Key,
-			// Value: "",
 			ClientID: args.ClientID,
 			CommandID: args.CommandID,
-			// Config: shardmaster.Config{},
-			// ShardStore: map[int]map[string]string{},
-			// LastApplied: map[int64]CmdResults{},
+			ConfigNum: args.ConfigNum,
 		}
 	}
 	kv.RPCHandler(setWrongLeader, accepted, lastAppliedMatch, createCommand)
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	DPrintf("server %d-%d handling putappend\n", kv.gid, kv.me)
+	// DPrintf("server %d-%d handling putappend\n", kv.gid, kv.me)
 	
 	setWrongLeader := func() {
-		DPrintf("ShardKV %d WrongLeader PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
+		// DPrintf("ShardKV %d WrongLeader PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
 		reply.WrongLeader = true
 	}
 
 	accepted := func() bool {
-		shard := key2shard(args.Key)
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		// Set ErrWrongGroup & return false if not yet at or transitioning to the
+		// config num specified in the request.
+		if kv.curConfig.Num != args.ConfigNum &&
+		   (!kv.interConf || kv.nextConfig.Num != args.ConfigNum) {
+			reply.WrongLeader = false
+			reply.Err = ErrWrongGroup
+			return false
+		}
 		// Set ErrWrongGroup & return false if shard for key is not currently accepted
 		// within this group. This will be the case when
 		// A. the group isn't in charge of the shard in the current config
 		// B. the leader initiated a config change and the group isn't in charge of the shard in next config
-		kv.mu.Lock()
-		defer kv.mu.Unlock()
+		shard := key2shard(args.Key)
 		if !kv.accepted[shard] {
 			reply.WrongLeader = false
 			reply.Err = ErrWrongGroup
+			DPrintf("%d-%d error returning Get %s %d-%d - Wrong group\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
 			return false
 		}
 		return true
@@ -186,21 +204,24 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		if ok && lastApplied.Cmd.CommandID == args.CommandID {
 			reply.WrongLeader = false
 			reply.Err = lastApplied.Err
-			DPrintf("ShardKV %d successfully returning PutAppend %d-%d\n", kv.me, args.ClientID, args.CommandID)
+			if reply.Err == OK {
+				DPrintf("%d-%d successfully returning PutAppend %d-%d\n", kv.gid, kv.me, args.ClientID, args.CommandID)
+			} else if reply.Err == ErrNotLeader {
+				DPrintf("%d-%d error returning PutAppend %s %d-%d - Not leader\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
+			} else if reply.Err == ErrWrongGroup {
+				DPrintf("%d-%d error returning PutAppend %s %d-%d - Wrong group\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
+			}
 			return true
 		} else { return false }
 	}
 	
 	createCommand := func() Op {
 		command := Op {
-			// Type: 0,
 			Key: args.Key,
 			Value: args.Value,
 			ClientID: args.ClientID,
 			CommandID: args.CommandID,
-			// Config: shardmaster.Config{},
-			// ShardStore: map[int]map[string]string{},
-			// LastApplied: map[int64]CmdResults{}
+			ConfigNum: args.ConfigNum,
 		}
 		if args.Op == "Put" {
 			command.Type = OpPut
@@ -306,9 +327,16 @@ func (kv *ShardKV) readApplyCh() (raft.ApplyMsg, bool) {
 func (kv *ShardKV) apply(op Op) {
 	switch op.Type {
 	case OpGet:
-		shard := key2shard(op.Key)
+		// If not at or transitioning to the config num, return error
+		if kv.curConfig.Num != op.ConfigNum &&
+		   (!kv.interConf || kv.nextConfig.Num != op.ConfigNum) {
+			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup }
+			return
+		}
 		// If shard not accepted, return error
+		shard := key2shard(op.Key)
 		if !kv.accepted[shard] {
+			DPrintf("%s (shard %d) not accepted\n", op.Key, shard)
 			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup }
 			return
 		}
@@ -319,8 +347,16 @@ func (kv *ShardKV) apply(op Op) {
 			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrNoKey }
 		}
 	case OpPut:
+		// If not at or transitioning to the config num, return error
+		if kv.curConfig.Num != op.ConfigNum &&
+		   (!kv.interConf || kv.nextConfig.Num != op.ConfigNum) {
+			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup }
+			return
+		}
+		// If shard not accepted, return error
 		shard := key2shard(op.Key)
 		if !kv.accepted[shard] {
+			DPrintf("%s (shard %d) not accepted\n", op.Key, shard)
 			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup }
 			return
 		}
@@ -329,9 +365,16 @@ func (kv *ShardKV) apply(op Op) {
 			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK }
 		}
 	case OpAppend:
-		shard := key2shard(op.Key)
+		// If not at or transitioning to the config num, return error
+		if kv.curConfig.Num != op.ConfigNum &&
+		   (!kv.interConf || kv.nextConfig.Num != op.ConfigNum) {
+			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup }
+			return
+		}
 		// If shard not accepted, return error
+		shard := key2shard(op.Key)
 		if !kv.accepted[shard] {
+			DPrintf("%s (shard %d) not accepted\n", op.Key, shard)
 			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup }
 			return
 		}
@@ -371,11 +414,13 @@ func (kv *ShardKV) apply(op Op) {
 		if kv.curConfig.Num >= op.Config.Num {
 			return
 		}
+		// DPrintf("%d-%d changing to config %d\n", kv.gid, kv.me, op.Config.Num)
 		// Write additions to kv.kvstore & kv.accepted
 		for shard, store := range op.ShardStore {
 			kv.kvstore[shard] = store
 			kv.accepted[shard] = true
 		}
+		DPrintf("%d-%d accepted:", kv.gid, kv.me, kv.accepted)
 		// Write additions to kv.lastApplied
 		for clientID, cmdres := range op.LastApplied {
 			c, ok := kv.lastApplied[clientID]
@@ -394,6 +439,7 @@ func (kv *ShardKV) apply(op Op) {
 		// Update current & next config
 		kv.curConfig = kv.nextConfig
 		kv.nextConfig = shardmaster.Config{}
+		DPrintf("%d-%d changed to config %d\n", kv.gid, kv.me, op.Config.Num)
 	default:
 		DPrintf("unrecognized operation\n")
 	}
@@ -488,6 +534,7 @@ func (kv *ShardKV) configWorker() {
 
 // Lock not held when called
 func (kv *ShardKV) initiateConfigChange(curConfNum int) {
+	DPrintf("%d-%d initiating config change to %d\n", kv.gid, kv.me, curConfNum+1)
 	// Start consensus on initiating change to next config
 	nextConfig := kv.mck.Query(curConfNum + 1)
 	cmd := Op {

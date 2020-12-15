@@ -74,7 +74,7 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 //
 func (ck *Clerk) Get(key string) string {
 	// DPrintf("sending get request for key %s\n", key)
-	args := GetArgs{ key, ck.clientID, ck.nextCommandID }
+	args := GetArgs{ key, ck.clientID, ck.nextCommandID, ck.config.Num }
 	ck.nextCommandID += 1
 
 	for {
@@ -96,14 +96,15 @@ func (ck *Clerk) Get(key string) string {
 				}
 			}
 		}
-		// Increment command ID to try again after receiving wrong group or failing to reach group
-		args.CommandID = ck.nextCommandID
-		ck.nextCommandID += 1
 		// Sleep
 		time.Sleep(100 * time.Millisecond)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 		DPrintf("config", ck.config)
+		args.ConfigNum = ck.config.Num
+		// Increment command ID to try again after receiving wrong group or failing to reach group
+		args.CommandID = ck.nextCommandID
+		ck.nextCommandID += 1
 	}
 
 	return ""
@@ -115,7 +116,7 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// DPrintf("sending putappend request for key %s\n", key)
-	args := PutAppendArgs{ key, value, op, ck.clientID, ck.nextCommandID }
+	args := PutAppendArgs{ key, value, op, ck.clientID, ck.nextCommandID, ck.config.Num }
 	ck.nextCommandID += 1
 
 	for {
@@ -137,14 +138,15 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				}
 			}
 		}
-		// Increment command ID to try again after receiving wrong group
-		args.CommandID = ck.nextCommandID
-		ck.nextCommandID += 1
 		// Sleep
 		time.Sleep(100 * time.Millisecond)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 		DPrintf("config", ck.config)
+		args.ConfigNum = ck.config.Num
+		// Increment command ID to try again after receiving wrong group
+		args.CommandID = ck.nextCommandID
+		ck.nextCommandID += 1
 	}
 }
 
