@@ -14,6 +14,7 @@ const (
 	ErrNoKey      = "ErrNoKey"
 	ErrWrongGroup = "ErrWrongGroup"
 	ErrNotLeader  = "ErrNotLeader"
+	ErrNotReady   = "ErrNotReady"
 )
 
 type Err string
@@ -26,6 +27,8 @@ type PutAfterArgs struct {
 	
 	ClientID  int64
 	CommandID uint8
+
+	ConfigNum int
 }
 
 type PutAfterReply struct {
@@ -41,6 +44,8 @@ type GetByVersionArgs struct {
 	
 	ClientID  int64
 	CommandID uint8
+
+	ConfigNum int
 }
 
 type GetByVersionReply struct {

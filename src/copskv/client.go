@@ -78,7 +78,7 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 func (ck *Clerk) Get(key string) string {
 	DPrintf("sending get request for key %s\n", key)
 	// get_by_version(key, LATEST)
-	args := GetByVersionArgs{ key, 0, ck.clientID, ck.nextCommandID }
+	args := GetByVersionArgs{ key, 0, ck.clientID, ck.nextCommandID, ck.config.Num }
 	ck.nextCommandID += 1
 
 	for {
@@ -118,6 +118,7 @@ func (ck *Clerk) Get(key string) string {
 		time.Sleep(100 * time.Millisecond)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
+		args.ConfigNum = ck.config.Num
 	}
 
 	return ""
@@ -127,7 +128,7 @@ func (ck *Clerk) Put(key string, value string) bool {
 	DPrintf("sending put request for key %s\n", key)
 	nearest := ck.metadata
 	ck.metadata = make(map[string]uint64)
-	args := PutAfterArgs{ key, value, nearest, 0, ck.clientID, ck.nextCommandID }
+	args := PutAfterArgs{ key, value, nearest, 0, ck.clientID, ck.nextCommandID, ck.config.Num }
 	ck.nextCommandID += 1
 
 	for {
@@ -163,6 +164,7 @@ func (ck *Clerk) Put(key string, value string) bool {
 		time.Sleep(100 * time.Millisecond)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
+		args.ConfigNum = ck.config.Num
 		// DPrintf("config number %d\n", ck.config.Num)
 	}
 }
