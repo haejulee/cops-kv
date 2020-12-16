@@ -103,6 +103,7 @@ func (kv *ShardKV) PutAfter(args *PutAfterArgs, reply *PutAfterReply) {
 		reply.WrongLeader = false
 		reply.Err = ErrWrongGroup
 		// DPrintf("%d-%d error returning Get %s %d-%d - Wrong group\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
+		kv.mu.Unlock()
 		return
 	}
 	// Make sure key is in shard
@@ -111,6 +112,7 @@ func (kv *ShardKV) PutAfter(args *PutAfterArgs, reply *PutAfterReply) {
 		reply.WrongLeader = false
 		reply.Err = ErrWrongGroup
 		// DPrintf("%d-%d error returning Get %s %d-%d - Wrong group\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
+		kv.mu.Unlock()
 		return
 	}
 	
