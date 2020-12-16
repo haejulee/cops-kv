@@ -23,7 +23,7 @@ var contexts map[int64]context
 var clientA, clientB, clientC, clientD int64
 
 func main() {
-	fmt.Println("Hello!")
+	fmt.Println("Welcome to the COPS demo system")
 	conf = copskv.MakeSystem()
 	contexts = make(map[int64]context)
 
@@ -73,6 +73,7 @@ func interactive() {
 	fmt.Println("usage: A/B/C/D put/get key [value]")
 	reader := bufio.NewReader(os.Stdin)
 	for {
+		fmt.Printf("> ")
 		text, err := reader.ReadString('\n')
 		if err != nil {
 			continue
@@ -129,41 +130,4 @@ func nrand() int64 {
 	bigx, _ := rand.Int(rand.Reader, max)
 	x := bigx.Int64()
 	return x
-}
-
-func CreateContext(c int) int64 {
-	ctx_id := nrand()
-	clerk := conf.MakeClient(c)
-	contexts[ctx_id] = context{ c, clerk }
-	return ctx_id
-}
-
-func DeleteContext(ctx_id int64) bool {
-	if context, ok := contexts[ctx_id]; ok {
-		conf.DeleteClient(context.cluster, context.clerk)
-		delete(contexts, ctx_id)
-		return true
-	} else {
-		return false
-	}
-}
-
-func Put(key string, val string, ctx_id int64) bool {
-	ctx, ok := contexts[ctx_id]
-	if !ok {
-		return false
-	}
-	clerk := ctx.clerk
-	clerk.Put(key, val)
-	return true
-}
-
-func Get(key string, ctx_id int64) string {
-	ctx, ok := contexts[ctx_id]
-	if !ok {
-		return ""
-	}
-	clerk := ctx.clerk
-	val := clerk.Get(key)
-	return val
 }
