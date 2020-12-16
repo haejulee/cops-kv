@@ -1,5 +1,6 @@
 /* server.go
  Contains the 'main' server code:
+ - Initializing & killing the server
  - All client-facing RPCs (GetByVersion, PutAfter)
  - Applying kv-store state changes
  - Snapshotting
@@ -246,140 +247,75 @@ func (kv *ShardKV) readApplyCh() (raft.ApplyMsg, bool) {
 // Apply a committed command to local state
 func (kv *ShardKV) apply(op Op) {
 	// DPrintf("%d-%d-%d applying operation", kv.cid, kv.gid, kv.me)
+	if op.Type == OpGetByVersion || op.Type == OpPutAfter || op.Type == OpNeverDepend {
+		// If not at or transitioning to the config num, return error
+		if kv.curConfig.Num != op.ConfigNum &&
+		   (!kv.interConf || kv.nextConfig.Num != op.ConfigNum) {
+		   kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup, op.Version, map[string]uint64{}, false }
+			return
+		}
+		// If shard not accepted, return error
+		shard := key2shard(op.Key)
+		if !kv.accepted[shard] {
+			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup, op.Version, map[string]uint64{}, false }
+			return
+		}
+	}
 	switch op.Type {
 	case OpGetByVersion:
-		// If not at or transitioning to the config num, return error
-		if kv.curConfig.Num != op.ConfigNum &&
-		   (!kv.interConf || kv.nextConfig.Num != op.ConfigNum) {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup, 0, map[string]uint64{}, false }
-			return
-		}
-		// If shard not accepted, return error
-		shard := key2shard(op.Key)
-		if !kv.accepted[shard] {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup, 0, map[string]uint64{}, false }
-			return
-		}
-		entry, ok := kv.kvstore[shard][op.Key]
-		if ok {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, entry.Value, OK, entry.Version, entry.Deps, entry.NeverDepend }
-		} else {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrNoKey, 0, map[string]uint64{}, false }
-		}
+		kv.applyGetByVersion(op)
 	case OpPutAfter:
-		// If not at or transitioning to the config num, return error
-		if kv.curConfig.Num != op.ConfigNum &&
-		   (!kv.interConf || kv.nextConfig.Num != op.ConfigNum) {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup, 0, map[string]uint64{}, false }
-			return
-		}
-		// If shard not accepted, return error
-		shard := key2shard(op.Key)
-		if !kv.accepted[shard] {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrWrongGroup, 0, map[string]uint64{}, false }
-			return
-		}
-		if kv.lastApplied[op.ClientID].Cmd.CommandID != op.CommandID {
-			// Determining version of put operation
-			version := op.Version
-			if version == 0 {
-				// If version argument was nil, generate new version number & apply immediately
-				version = kv.versionNumber()
+		kv.applyPutAfter(op)
+	case OpNeverDepend:
+		kv.applyNeverDepend(op)
+	case OpConfChangePrep:
+		kv.applyConfChangePrep(op)
+	case OpConfChange:
+		kv.applyConfChange(op)
+	default:
+		DPrintf("unrecognized operation\n")
+	}
+}
+
+func (kv *ShardKV) applyGetByVersion(op Op) {
+	shard := key2shard(op.Key)
+	entry, ok := kv.kvstore[shard][op.Key]
+	if ok {
+		kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, entry.Value, OK, entry.Version, entry.Deps, entry.NeverDepend }
+	} else {
+		kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", ErrNoKey, 0, map[string]uint64{}, false }
+	}
+}
+
+func (kv *ShardKV) applyPutAfter(op Op) {
+	shard := key2shard(op.Key)
+	if kv.lastApplied[op.ClientID].Cmd.CommandID != op.CommandID {
+		// Determining version of put operation
+		version := op.Version
+		if version == 0 {
+			// If version argument was nil, generate new version number & apply immediately
+			version = kv.versionNumber()
+			kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
+			kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK, version, op.Nearest, false }
+			// Append put operation with the generated version number to replication queue
+			// DPrintf("%d-%d-%d adding to toReplicate", kv.cid, kv.gid, kv.me)
+			op.Version = version
+			kv.toReplicate = append(kv.toReplicate, op)
+		} else {
+			// If version specified,
+			// update latest timestamp using given version
+			kv.updateTimestamp(vtot(version))
+			// Apply put operation, only if new version is higher than existing
+			entry, ok := kv.kvstore[shard][op.Key]
+			// DPrintf("async put %s:%s", op.Key, op.Value)
+			if !ok || vtot(entry.Version) < vtot(version) ||
+				(vtot(entry.Version) == vtot(version) && uint32(entry.Version) < uint32(version)) {
+				// DPrintf("writing async put %s:%s", op.Key, op.Value)
 				kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
 				kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK, version, op.Nearest, false }
-				// Append put operation with the generated version number to replication queue
-				// DPrintf("%d-%d-%d adding to toReplicate", kv.cid, kv.gid, kv.me)
-				op.Version = version
-				kv.toReplicate = append(kv.toReplicate, op)
-			} else {
-				// If version specified,
-				// update latest timestamp using given version
-				kv.updateTimestamp(vtot(version))
-				// Apply put operation, only if new version is higher than existing
-				entry, ok := kv.kvstore[shard][op.Key]
-				// DPrintf("async put %s:%s", op.Key, op.Value)
-				if !ok || vtot(entry.Version) < vtot(version) ||
-					(vtot(entry.Version) == vtot(version) && uint32(entry.Version) < uint32(version)) {
-					// DPrintf("writing async put %s:%s", op.Key, op.Value)
-					kv.kvstore[shard][op.Key] = Entry{ version, op.Value, op.Nearest, false }
-					kv.lastApplied[op.ClientID] = CmdResults{ op, op.CommandID, op.Key, "", OK, version, op.Nearest, false }
-				}
-				// DPrintf("CCC")
 			}
+			// DPrintf("CCC")
 		}
-	case OpNeverDepend:
-		// If not at or transitioning to the config num, return error
-		if kv.curConfig.Num != op.ConfigNum &&
-		   (!kv.interConf || kv.nextConfig.Num != op.ConfigNum) {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, 0, op.Key, "", ErrWrongGroup, op.Version, map[string]uint64{}, false }
-			return
-		}
-		// If shard not accepted, return error
-		shard := key2shard(op.Key)
-		if !kv.accepted[shard] {
-			kv.lastApplied[op.ClientID] = CmdResults{ op, 0, op.Key, "", ErrWrongGroup, op.Version, map[string]uint64{}, false }
-			return
-		}
-		entry := kv.kvstore[shard][op.Key]
-		if entry.Version == op.Version {
-			entry.NeverDepend = true
-			kv.kvstore[shard][op.Key] = entry
-		}
-		kv.lastApplied[op.ClientID] = CmdResults{ op, 0, op.Key, "", OK, op.Version, map[string]uint64{}, true }
-	case OpConfChangePrep:
-		// If currently at the config prior to given config
-		if kv.curConfig.Num == op.Config.Num - 1 {
-			// If not already in inter-config mode
-			if !kv.interConf {
-				// Go into inter-config mode & modify currently accepted shards
-				kv.interConf = true
-				// For each shard, set kv.accepted[shard] to false if no longer covered
-				// by current group in the new config.
-				for shard, accepted := range kv.accepted {
-					if accepted {
-						newgid := op.Config.Shards[shard]
-						if newgid != kv.gid {
-							kv.accepted[shard] = false
-						}
-					}
-				}
-				// Update next config
-				kv.nextConfig = op.Config
-			}
-		}
-	case OpConfChange:
-		// If already past this config change, ignore
-		if kv.curConfig.Num >= op.Config.Num {
-			return
-		}
-		// DPrintf("%d-%d changing to config %d\n", kv.gid, kv.me, op.Config.Num)
-		// Write additions to kv.kvstore & kv.accepted
-		for shard, store := range op.ShardStore {
-			kv.kvstore[shard] = store
-			kv.accepted[shard] = true
-		}
-		// DPrintf("%d-%d accepted:", kv.gid, kv.me, kv.accepted)
-		// Write additions to kv.lastApplied
-		for clientID, cmdres := range op.LastApplied {
-			c, ok := kv.lastApplied[clientID]
-			if !ok {
-				// If there's no entry for clientID in kv.lastApplied, write
-				// received entry to kv.lastApplied[clientID]
-				kv.lastApplied[clientID] = cmdres
-			} else if cmdres.CommandID > c.CommandID {
-				// If the received entry is later than existing, overwrite
-				// received entry to kv.lastApplied[clientID]
-				kv.lastApplied[clientID] = cmdres
-			}
-		}
-		// Reset kv.interConf
-		kv.interConf = false
-		// Update current & next config
-		kv.curConfig = kv.nextConfig
-		kv.nextConfig = copsmaster.Config{}
-		// DPrintf("%d-%d changed to config %d\n", kv.gid, kv.me, op.Config.Num)
-	default:
-		// DPrintf("unrecognized operation\n")
 	}
 }
 

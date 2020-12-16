@@ -2,6 +2,7 @@
  Functions & structs related to asynchronous replication between clusters
  - Asynchronous replication goroutine (replicationWorker) + subroutines/forks
  - NeverDepend RPC (invoked from sendNeverDepend, a child of replicationWorker)
+ - Applying NeverDepend operations (applyNeverDepend)
  */
 package copskv
 
@@ -52,6 +53,16 @@ func (kv *ShardKV) NeverDepend(args *NeverDependArgs, reply *NeverDependReply) {
 		// Yield lock to let background routine apply commands
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func (kv *ShardKV) applyNeverDepend(op Op) {
+	shard := key2shard(op.Key)
+	entry := kv.kvstore[shard][op.Key]
+	if entry.Version == op.Version {
+	 	entry.NeverDepend = true
+	 	kv.kvstore[shard][op.Key] = entry
+	}
+	kv.lastApplied[op.ClientID] = CmdResults{ op, 0, op.Key, "", OK, op.Version, map[string]uint64{}, true }
 }
 
 

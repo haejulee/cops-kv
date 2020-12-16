@@ -59,6 +59,63 @@ func (kv *ShardKV) GetShard(args *GetShardArgs, reply *GetShardReply) {
 }
 
 
+func (kv *ShardKV) applyConfChangePrep(op Op) {
+	// If currently at the config prior to given config
+	if kv.curConfig.Num == op.Config.Num - 1 {
+		// If not already in inter-config mode
+		if !kv.interConf {
+			// Go into inter-config mode & modify currently accepted shards
+			kv.interConf = true
+			// For each shard, set kv.accepted[shard] to false if no longer covered
+			// by current group in the new config.
+			for shard, accepted := range kv.accepted {
+				if accepted {
+					newgid := op.Config.Shards[shard]
+					if newgid != kv.gid {
+						kv.accepted[shard] = false
+					}
+				}
+			}
+			// Update next config
+			kv.nextConfig = op.Config
+		}
+	}
+}
+
+func (kv *ShardKV) applyConfChange(op Op) {
+	// If already past this config change, ignore
+	if kv.curConfig.Num >= op.Config.Num {
+		return
+	}
+	// DPrintf("%d-%d changing to config %d\n", kv.gid, kv.me, op.Config.Num)
+	// Write additions to kv.kvstore & kv.accepted
+	for shard, store := range op.ShardStore {
+		kv.kvstore[shard] = store
+		kv.accepted[shard] = true
+	}
+	// DPrintf("%d-%d accepted:", kv.gid, kv.me, kv.accepted)
+	// Write additions to kv.lastApplied
+	for clientID, cmdres := range op.LastApplied {
+		c, ok := kv.lastApplied[clientID]
+		if !ok {
+			// If there's no entry for clientID in kv.lastApplied, write
+			// received entry to kv.lastApplied[clientID]
+			kv.lastApplied[clientID] = cmdres
+		} else if cmdres.CommandID > c.CommandID {
+			// If the received entry is later than existing, overwrite
+			// received entry to kv.lastApplied[clientID]
+			kv.lastApplied[clientID] = cmdres
+		}
+	}
+	// Reset kv.interConf
+	kv.interConf = false
+	// Update current & next config
+	kv.curConfig = kv.nextConfig
+	kv.nextConfig = copsmaster.Config{}
+	// DPrintf("%d-%d changed to config %d\n", kv.gid, kv.me, op.Config.Num)
+}
+
+
 // When leader, periodically handles config changes
 // A) checks for config updates to start new config changes
 // B) checks for started config changes to complete them
