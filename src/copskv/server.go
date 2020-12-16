@@ -42,7 +42,6 @@ const (
 	OpConfChange
 )
 
-
 type Op struct {
 	Type uint8
 	Key string
@@ -102,11 +101,6 @@ type Entry struct {
 	NeverDepend bool
 }
 
-type moveShards struct {
-	configNum int // config number corresponding to migration
-	shards []int // shards to migrate from one gid to another
-}
-
 type CmdResults struct {
 	Cmd Op
 	CommandID uint8
@@ -128,51 +122,10 @@ type KVSnapshot struct {
 	CurConfig  copsmaster.Config
 	NextConfig copsmaster.Config
 	Accepted   [copsmaster.NShards]bool
+
+	// ToReplicate []Op
 }
 
-// Extracts just the Lamport Timestamp from a version number
-func vtot(versionNum uint64) uint32 {
-	return uint32(versionNum >> 32)
-}
-
-// Returns true if v1 is at least as late as v2
-func versionUpToDate(v1, v2 uint64) bool {
-	// Convert to lamport timestamps
-	t1 := vtot(v1)
-	t2 := vtot(v2)
-	// compare timestamps
-	if t1 >= t2 {
-		return true
-	} else {
-		return false
-	}
-}
-
-// Returns Lamport timestamp of next event
-// Must hold lock while calling
-func (kv *ShardKV) lamportTimestamp() uint32 {
-	// Add 1 to latest timestamp & return its value
-	kv.latestTimestamp += 1
-	return kv.latestTimestamp
-}
-
-// Updates system's latest witnessed timestamp,
-// considering an incoming timestamp
-// Must hold lock while calling
-func (kv *ShardKV) updateTimestamp(incoming uint32) {
-	if incoming > kv.latestTimestamp {
-		kv.latestTimestamp = incoming
-	}
-}
-
-// Returns a next version number based on Lamport Timestamp
-// Must hold lock while calling
-func (kv *ShardKV) versionNumber() uint64 {
-	timestamp := uint64(kv.lamportTimestamp())
-	ver := timestamp << 32
-	ver = ver | uint64(kv.nodeID)
-	return ver
-}
 
 func (kv *ShardKV) GetByVersion(args *GetByVersionArgs, reply *GetByVersionReply) {
 	// DPrintf("server %d-%d handling get\n", kv.gid, kv.me)
@@ -239,6 +192,51 @@ func (kv *ShardKV) GetByVersion(args *GetByVersionArgs, reply *GetByVersionReply
 
 }
 
+func (kv *ShardKV) PutAfter(args *PutAfterArgs, reply *PutAfterReply) {
+	// If version is nil, synchronous put_after -> immediately commit put
+	if args.Version == 0 {
+		kv.PutAfterHandler(args, reply)
+		return
+	}
+	// Else, handle async put_after -> commit after dependencies met
+	// DPrintf("%d-%d-%d Received async PutAfter\n", kv.cid, kv.gid, kv.me)
+
+	// If not leader, return
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		reply.WrongLeader = true
+		return
+	}
+	kv.mu.Lock()
+	// If not up to date to ConfigNum, return wronggroup
+	if kv.curConfig.Num != args.ConfigNum &&
+		(!kv.interConf || kv.nextConfig.Num != args.ConfigNum) {
+		reply.WrongLeader = false
+		reply.Err = ErrWrongGroup
+		// DPrintf("%d-%d error returning Get %s %d-%d - Wrong group\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
+		return
+	}
+	// Make sure key is in shard
+	shard := key2shard(args.Key)
+	if !kv.accepted[shard] {
+		reply.WrongLeader = false
+		reply.Err = ErrWrongGroup
+		// DPrintf("%d-%d error returning Get %s %d-%d - Wrong group\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
+		return
+	}
+	
+	// Make sure dependencies are met
+	// DPrintf("%d-%d-%d Doing dependency checks\n", kv.cid, kv.gid, kv.me)
+	kv.mu.Unlock()
+	kv.doDepChecks(args.Nearest)
+	
+	// Once dependencies are met, commit put
+	// DPrintf("%d-%d-%d Committing async PutAfter\n", kv.cid, kv.gid, kv.me)
+	kv.asyncputmu.Lock()
+	kv.PutAfterHandler(args, reply)
+	kv.asyncputmu.Unlock()
+	// DPrintf("%d-%d-%d Returning async PutAfter\n", kv.cid, kv.gid, kv.me)
+}
+
 func (kv *ShardKV) PutAfterHandler(args *PutAfterArgs, reply *PutAfterReply) {
 	// DPrintf("server %d-%d handling putappend\n", kv.gid, kv.me)
 
@@ -302,51 +300,6 @@ func (kv *ShardKV) PutAfterHandler(args *PutAfterArgs, reply *PutAfterReply) {
 	kv.RPCHandler(setWrongLeader, accepted, lastAppliedMatch, createCommand)
 }
 
-func (kv *ShardKV) PutAfter(args *PutAfterArgs, reply *PutAfterReply) {
-	// If version is nil, synchronous put_after -> immediately commit put
-	if args.Version == 0 {
-		kv.PutAfterHandler(args, reply)
-		return
-	}
-	// Else, handle async put_after -> commit after dependencies met
-	// DPrintf("%d-%d-%d Received async PutAfter\n", kv.cid, kv.gid, kv.me)
-
-	// If not leader, return
-	if _, isLeader := kv.rf.GetState(); !isLeader {
-		reply.WrongLeader = true
-		return
-	}
-	kv.mu.Lock()
-	// If not up to date to ConfigNum, return wronggroup
-	if kv.curConfig.Num != args.ConfigNum &&
-		(!kv.interConf || kv.nextConfig.Num != args.ConfigNum) {
-		reply.WrongLeader = false
-		reply.Err = ErrWrongGroup
-		// DPrintf("%d-%d error returning Get %s %d-%d - Wrong group\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
-		return
-	}
-	// Make sure key is in shard
-	shard := key2shard(args.Key)
-	if !kv.accepted[shard] {
-		reply.WrongLeader = false
-		reply.Err = ErrWrongGroup
-		// DPrintf("%d-%d error returning Get %s %d-%d - Wrong group\n", kv.gid, kv.me, args.Key, args.ClientID, args.CommandID)
-		return
-	}
-	
-	// Make sure dependencies are met
-	// DPrintf("%d-%d-%d Doing dependency checks\n", kv.cid, kv.gid, kv.me)
-	kv.mu.Unlock()
-	kv.doDepChecks(args.Nearest)
-	
-	// Once dependencies are met, commit put
-	// DPrintf("%d-%d-%d Committing async PutAfter\n", kv.cid, kv.gid, kv.me)
-	kv.asyncputmu.Lock()
-	kv.PutAfterHandler(args, reply)
-	kv.asyncputmu.Unlock()
-	// DPrintf("%d-%d-%d Returning async PutAfter\n", kv.cid, kv.gid, kv.me)
-}
-
 // Code shared by GetByVersion and PutAfter RPC handlers
 func (kv *ShardKV) RPCHandler(setWrongLeader func(),
 							   accepted func() bool,
@@ -387,95 +340,6 @@ func (kv *ShardKV) RPCHandler(setWrongLeader func(),
 		// Yield lock to let background routine apply commands
 		// DPrintf("%d-%d-%d PPP", kv.cid, kv.gid, kv.me)
 		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func (kv *ShardKV) DepCheck(args *DepCheckArgs, reply *DepCheckReply) {
-	// Make sure leader
-	if _, isLeader := kv.rf.GetState(); !isLeader {
-		reply.WrongLeader = true
-		return
-	}
-	// Do dependency check
-	reply.WrongLeader = false
-	// TODO: maybe make this check blocking until satisfied, as long as still leader
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	shard := key2shard(args.Key)
-	entry := kv.kvstore[shard][args.Key]
-	if versionUpToDate(entry.Version, args.Version) {
-		reply.Ok = true
-	} else {
-		reply.Ok = false
-	}
-}
-
-func (kv *ShardKV) NeverDepend(args *NeverDependArgs, reply *NeverDependReply) {
-	command := Op{}
-	command.Type = OpNeverDepend
-	command.Key = args.Key
-	command.Version = args.Version
-	command.ClientID = args.ClientID
-	_, term, isLeader := kv.rf.Start(command)
-	if !isLeader {
-		reply.WrongLeader = true
-		return
-	}
-	for {
-		// If matching command applied, return
-		kv.mu.Lock()
-		lastApplied, ok := kv.lastApplied[args.ClientID]
-		kv.mu.Unlock()
-		if ok && lastApplied.Cmd.Type == OpNeverDepend &&
-		   lastApplied.Cmd.Version == args.Version {
-			reply.WrongLeader = false
-			reply.Err = lastApplied.Err
-			break
-		}
-		// Keep checking if still leader (for the same term)
-		if curTerm, _ := kv.rf.GetState(); curTerm != term {
-			reply.WrongLeader = true
-			break
-		}
-		// Yield lock to let background routine apply commands
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func (kv *ShardKV) GetShard(args *GetShardArgs, reply *GetShardReply) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	// Only respond if leader of the group
-	if _, isLeader := kv.rf.GetState(); !isLeader {
-		reply.Err = ErrNotLeader
-		return
-	}
-	if kv.curConfig.Num < args.ConfigNum {
-		// If not yet up to date with the config number
-		// of the shard being requested, return ErrNotReady
-		reply.Err = ErrNotReady
-	} else if kv.curConfig.Num == args.ConfigNum && !kv.interConf {
-		// If current config number is exactly that being requested,
-		// but the change to next config hasn't started yet in this group,
-		// also return ErrNotReady
-		reply.Err = ErrNotReady
-	} else {
-		// Otherwise, this group is ready to hand over the shard
-		reply.Err = OK
-		// Return a copy of the shard
-		copyOfShard := make(map[string]Entry)
-		for k, v := range kv.kvstore[args.Shard] {
-			copyOfShard[k] = v
-		}
-		reply.Shard = copyOfShard
-		// Return relevant lastApplied entries
-		relevantLastApplied := make(map[int64]CmdResults)
-		for clientID, cmdres := range kv.lastApplied {
-			if key2shard(cmdres.Key) == args.Shard {
-				relevantLastApplied[clientID] = cmdres
-			}
-		}
-		reply.LastApplied = relevantLastApplied
 	}
 }
 
@@ -630,6 +494,7 @@ func (kv *ShardKV) apply(op Op) {
 	}
 }
 
+// Apply snapshot received through applyCh
 func (kv *ShardKV) applySnapshot(snapshot KVSnapshot) {
 	// DPrintf("applying snapshot\n")
 	kv.lastApplied = snapshot.LastApplied
@@ -639,6 +504,7 @@ func (kv *ShardKV) applySnapshot(snapshot KVSnapshot) {
 	kv.curConfig = snapshot.CurConfig
 	kv.nextConfig = snapshot.NextConfig
 	kv.accepted = snapshot.Accepted
+	// kv.toReplicate = snapshot.ToReplicate
 }
 
 // Periodically apply newly committed commands from applyCh
@@ -675,345 +541,12 @@ func (kv *ShardKV) backgroundWorker() {
 				kv.curConfig,
 				kv.nextConfig,
 				kv.accepted,
+				// kv.toReplicate,
 			}
 			kv.rf.Snapshot(snapshot, kv.lastAppliedIndex)
 		}
 		// DPrintf("%d-%d done processing commit\n", kv.gid, kv.me)
 		kv.mu.Unlock()
-	}
-}
-
-// When leader, periodically handles config changes
-// A) checks for config updates to start new config changes
-// B) checks for started config changes to complete them
-func (kv *ShardKV) configWorker() {
-	for {
-		// If server has been killed, terminate this routine as well
-		if !kv.rf.IsAlive() {
-			return
-		}
-		// If not leader, do nothing
-		if _, isLeader := kv.rf.GetState(); !isLeader {
-			goto Sleep
-		}
-		// Acquire lock to check if group is in inter-config mode
-		kv.mu.Lock()
-		if kv.interConf { // If inter-config, retrieve new shards to complete transfer
-			kv.executeConfigChange()
-			continue
-		} else { // If not inter-config, check for config updates
-			// Save current config num before unlocking
-			curConfNum := kv.curConfig.Num
-			kv.mu.Unlock()
-			// If latest config is greater than group's current config
-			// initiate new config change
-			if kv.mck.Query(-1).Num > curConfNum {
-				kv.initiateConfigChange(curConfNum)
-			}
-		}
-		Sleep:
-		// Sleep for 90 milliseconds
-		time.Sleep(90 * time.Millisecond)
-	}
-}
-
-// Lock not held when called
-func (kv *ShardKV) initiateConfigChange(curConfNum int) {
-	// DPrintf("%d-%d initiating config change to %d\n", kv.gid, kv.me, curConfNum+1)
-	// Start consensus on initiating change to next config
-	nextConfig := kv.mck.Query(curConfNum + 1)
-	cmd := Op {
-		Type: OpConfChangePrep,
-		Config: nextConfig,
-	}
-	_, term, isLeader := kv.rf.Start(cmd)
-	if !isLeader {
-		return
-	}
-	// Wait until config change initiated or no longer leader
-	for {
-		// If switched to inter-config mode, break
-		kv.mu.Lock()
-		if kv.interConf {
-			kv.mu.Unlock()
-			break
-		}
-		kv.mu.Unlock()
-		// If in different term / no longer leader, also break
-		if t, l := kv.rf.GetState(); !l || t != term {
-			break
-		}
-		// Sleep to let other routines run
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-// Lock held when called, not held when returns
-func (kv *ShardKV) executeConfigChange() {
-	// Initialize structures to store incoming shard info
-	shards := make(map[int]map[string]Entry)
-	lastApplied := make(map[int64]CmdResults)
-	// Compare cur & next config to find which shards need to be received
-	newShards := []int{}
-	for i := 0; i < copsmaster.NShards; i++ {
-		// If a shard is not owned by group in cur config
-		// but owned by group in next config, add to newShards
-		if kv.curConfig.Shards[i] != kv.gid &&
-		   kv.nextConfig.Shards[i] == kv.gid {
-			newShards = append(newShards, i)
-		}
-	}
-	// Start routines to request shards from other groups
-	ntorecv := len(newShards)
-	for _, shard := range newShards {
-		go kv.retrieveShard(shard, &shards, &lastApplied, &ntorecv)
-	}
-	// Wait until all shards have been received
-	for ntorecv > 0 {
-		kv.mu.Unlock()
-		time.Sleep(10 * time.Millisecond)
-		if !kv.rf.IsAlive() {
-			kv.mu.Lock()
-			return
-		}
-		kv.mu.Lock()
-	}
-	// Commit config change to log to apply it to whole group
-	cmd := Op {
-		Type: OpConfChange,
-		Config: kv.nextConfig,
-		ShardStore: shards,
-		LastApplied: lastApplied,
-	}
-	nextConfNum := kv.nextConfig.Num
-	kv.mu.Unlock()
-	_, term, isLeader := kv.rf.Start(cmd)
-	if !isLeader {
-		return
-	}
-	// Wait until config change applied or no longer leader for term
-	for {
-		time.Sleep(10 * time.Millisecond)
-		// If no longer leader for term, break
-		if t, l := kv.rf.GetState(); !l || t != term {
-			break
-		}
-		// If config change succeeded, break
-		kv.mu.Lock()
-		if kv.curConfig.Num == nextConfNum {
-			kv.mu.Unlock()
-			break
-		}
-		kv.mu.Unlock()
-	}
-}
-
-func (kv *ShardKV) retrieveShard(shard int, shards *map[int]map[string]Entry, lastApplied *map[int64]CmdResults, ntorecv *int) {
-	kv.mu.Lock()
-	for *ntorecv > 0 {
-		kv.mu.Unlock()
-		if !kv.rf.IsAlive() {
-			return
-		}
-		if _, isLeader := kv.rf.GetState(); !isLeader {
-			return
-		}
-		kv.mu.Lock()
-		// DPrintf("%d-%d retrieving shard %d\n", kv.gid, kv.me, shard)
-		gid := kv.curConfig.Shards[shard]
-		// If there is no previous group with the shard, just ignore
-		if gid == 0 {
-			*ntorecv -= 1
-			(*shards)[shard] = make(map[string]Entry)
-			kv.mu.Unlock()
-			return
-		}
-		// DPrintf("%d-%d gid!=0\n", kv.gid, kv.me)
-		// Else, get shard from previous group
-		group := kv.curConfig.Groups[gid]
-		args := GetShardArgs{ kv.curConfig.Num, shard }
-		for i := 0; i < len(group); i = (i + 1) % len(group) {
-			srv := kv.make_end(group[i])
-			var reply GetShardReply
-			kv.mu.Unlock()
-			ok := srv.Call("ShardKV.GetShard", &args, &reply)
-			kv.mu.Lock()
-			if ok && reply.Err == OK {
-				*ntorecv -= 1
-				(*shards)[shard] = reply.Shard
-				for clientID, cmdres := range reply.LastApplied {
-					c, ok := (*lastApplied)[clientID]
-					if !ok {
-						// If there's no entry for clientID in lastApplied, add
-						(*lastApplied)[clientID] = cmdres
-					} else if cmdres.CommandID > c.CommandID {
-						// If the received entry is later than existing, overwrite
-						(*lastApplied)[clientID] = cmdres
-					}
-				}
-				kv.mu.Unlock()
-				return
-			}
-		}
-	}
-	kv.mu.Unlock()
-}
-
-// Asynchronously replicates put operations
-func (kv *ShardKV) replicationWorker() {
-	for {
-		// If server has been killed, terminate this routine as well
-		if !kv.rf.IsAlive() {
-			return
-		}
-		// Check if there are any puts to replicate across wide-area
-		kv.mu.Lock()
-		if len(kv.toReplicate) > 0 {
-			// Pop first operation from queue
-			op := kv.toReplicate[0]
-			// DPrintf("%d-%d-%d replicating op", kv.cid, kv.gid, kv.me, op)
-			if len(kv.toReplicate) == 1 {
-				kv.toReplicate = []Op{}
-			} else {
-				kv.toReplicate = append([]Op{}, kv.toReplicate[1:]...)
-			}
-			// Replicate operation to other clusters
-			kv.mu.Unlock()
-			mu := sync.Mutex{}
-			count := 0
-			mu.Lock()
-			// DPrintf("XXX nclusters %d", kv.nclusters, kv.mcks)
-			for c := 0; c < kv.nclusters; c++ {
-				// Iterate through each other cluster
-				if c != kv.cid {
-					// Find out latest configuration of other cluster
-					latestConf := kv.mcks[c].Query(-1)
-					// Figure out group in charge of key
-					shard := key2shard(op.Key)
-					gid := latestConf.Shards[shard]
-					group := latestConf.Groups[gid]
-					// Send PutAfter request to group until success
-					count += 1
-					go kv.replicateToCluster(op, group, &count, &mu)
-				}
-			}
-			// Wait until all replications are done
-			for count > 0 {
-				mu.Unlock()
-				time.Sleep(10 * time.Millisecond)
-				mu.Lock()
-			}
-			// send out never_depend for key:version
-			for c := 0; c < kv.nclusters; c++ {
-				// Iterate through each other cluster
-				if c != kv.cid {
-					// Find out latest configuration of other cluster
-					latestConf := kv.mcks[c].Query(-1)
-					// Figure out group in charge of key
-					shard := key2shard(op.Key)
-					gid := latestConf.Shards[shard]
-					group := latestConf.Groups[gid]
-					// Send PutAfter request to group until success
-					go kv.sendNeverDepend(op, group)
-				}
-			}
-		} else {
-			kv.mu.Unlock()
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-}
-
-func (kv *ShardKV) replicateToCluster(op Op, group []string, count *int, mu *sync.Mutex) {
-	// DPrintf("%d-%d-%d replicating op to other cluster", kv.cid, kv.gid, kv.me, op)
-	args := PutAfterArgs{ op.Key, op.Value, op.Nearest, op.Version, op.ClientID, op.CommandID, op.ConfigNum }
-	for i := 0; ; {
-		srv := kv.make_end(group[i])
-		var reply PutAfterReply
-		ok := srv.Call("ShardKV.PutAfter", &args, &reply)
-		if !ok || reply.WrongLeader {
-			if ok {
-				DPrintf("replicateToCluster: received wrong leader")
-			} else {
-				DPrintf("replicateToCluster: network error")
-			}
-			i = (i + 1) % len(group)
-			time.Sleep(time.Millisecond)
-			continue
-		}
-		if reply.Err == OK {
-			DPrintf("replicateToCluster: success")
-			mu.Lock()
-			*count -= 1
-			mu.Unlock()
-			return
-		}
-		DPrintf("replicateToCluster: received error")
-		time.Sleep(time.Millisecond)
-	}
-}
-
-func (kv *ShardKV) sendNeverDepend(op Op, group []string) {
-	args := NeverDependArgs{ op.Key, op.Version, op.ClientID }
-	for i := 0; ; {
-		srv := kv.make_end(group[i])
-		var reply NeverDependReply
-		ok := srv.Call("ShardKV.NeverDepend", &args, &reply)
-		if !ok || reply.WrongLeader {
-			i = (i + 1) % len(group)
-			time.Sleep(time.Millisecond)
-			continue
-		}
-		if reply.Err == OK {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
-// Blocks until all dependencies in deps are satisfied in the cluster
-func (kv *ShardKV) doDepChecks(deps map[string]uint64) {
-	mu := sync.Mutex{}
-	count := 0
-	// Carry out dependency checks for each key concurrently
-	mu.Lock()
-	for key, version := range deps {
-		count += 1
-		go kv.doDepCheck(key, version, &mu, &count)
-	}
-	// Wait until all checks are done
-	for count > 0 {
-		mu.Unlock()
-		time.Sleep(10 * time.Millisecond)
-		mu.Lock()
-	}
-}
-
-func (kv *ShardKV) doDepCheck(key string, version uint64, mu *sync.Mutex, count *int) {
-	// Find group (& its servers) in charge of key
-	shard := key2shard(key)
-	latestConfig := kv.mck.Query(-1)
-	gid := latestConfig.Shards[shard]
-	servers := latestConfig.Groups[gid]
-	// Query servers in charge until success
-	for i := 0; ; {
-		srv := kv.make_end(servers[i])
-		args := DepCheckArgs{ key, version }
-		var reply DepCheckReply
-		ok := srv.Call("ShardKV.DepCheck", &args, &reply)
-		if !ok || reply.WrongLeader {
-			// If wrong leader or connection issue, try next server
-			i = (i+1) % len(servers)
-			continue
-		}
-		if reply.Ok {
-			mu.Lock()
-			*count -= 1
-			mu.Unlock()
-			return
-		}
-		// If not successful, rest & try again with same server
-		time.Sleep(time.Millisecond)
 	}
 }
 
