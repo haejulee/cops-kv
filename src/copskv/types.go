@@ -14,12 +14,13 @@ import (
 
 const (
 	OpRegisterClient uint8 = iota
-	OpPutAfter
-	OpGetByVersion
-	OpDepCheck
-	OpNeverDepend
-	OpConfChangePrep
-	OpConfChange
+	OpPutAfter        // PutAfter (client-facing & async)
+	OpGetByVersion    // GetByVersion (client-facing)
+	OpDepCheck        // DepCheck (async PutAfter)
+	OpAsyncReplicated // to pop an op from toReplicate
+	OpNeverDepend     // NeverDepend (garbage collection for fully replicated Puts)
+	OpConfChangePrep  // Initiate shard config change
+	OpConfChange      // Complete shard config change
 )
 
 type Op struct {
@@ -103,5 +104,5 @@ type KVSnapshot struct {
 	NextConfig copsmaster.Config
 	Accepted   [copsmaster.NShards]bool
 
-	// ToReplicate []Op
+	ToReplicate []Op
 }

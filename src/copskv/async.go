@@ -7,6 +7,7 @@
 package copskv
 
 import (
+	"reflect"
 	"sync"
 	"time"
 )
@@ -66,12 +67,25 @@ func (kv *ShardKV) applyNeverDepend(op Op) {
 }
 
 
-// Asynchronously replicates put operations
-// TODO: integrate kv.toReplicate into consensus
-//       All servers build up toReplicate from applied commands
-//       Leader replicates 1st cmd, then commits
-//       all servers pop cmd from toReplicate
-//       Having multiple replication attempts for same cmd shouldn't be a problem (when changing leaders)
+func (kv *ShardKV) applyAsyncReplicated(op Op) {
+	// Check if this operation hasn't been popped yet
+	if len(kv.toReplicate) == 0 {
+		return
+	}
+	first := kv.toReplicate[0]
+	if first.ClientID != op.ClientID || first.CommandID != op.CommandID {
+		return
+	}
+	DPrintf("%d-%d-%d applying AsyncReplicated %d-%d\n", kv.cid, kv.gid, kv.me, op.ClientID, op.CommandID)
+	// If not popped yet, pop from kv.toReplicate
+	if len(kv.toReplicate) == 1 {
+		kv.toReplicate = []Op{}
+	} else {
+		kv.toReplicate = append([]Op{}, kv.toReplicate[1:]...)
+	}
+}
+
+// When leader, asynchronously replicates put operations
 func (kv *ShardKV) replicationWorker() {
 	for {
 		// If server has been killed, terminate this routine as well
@@ -79,22 +93,18 @@ func (kv *ShardKV) replicationWorker() {
 			return
 		}
 		// Check if there are any puts to replicate across wide-area
+		// (only do if leader)
+		_, isLeader := kv.rf.GetState()
 		kv.mu.Lock()
-		if len(kv.toReplicate) > 0 {
-			// Pop first operation from queue
+		if isLeader && len(kv.toReplicate) > 0 {
+			// Pick the first operation in the queue to replicate
 			op := kv.toReplicate[0]
-			// DPrintf("%d-%d-%d replicating op", kv.cid, kv.gid, kv.me, op)
-			if len(kv.toReplicate) == 1 {
-				kv.toReplicate = []Op{}
-			} else {
-				kv.toReplicate = append([]Op{}, kv.toReplicate[1:]...)
-			}
-			// Replicate operation to other clusters
 			kv.mu.Unlock()
+			// Create counter & mutex to protect counter
 			mu := sync.Mutex{}
 			count := 0
 			mu.Lock()
-			// DPrintf("XXX nclusters %d", kv.nclusters, kv.mcks)
+			// Replicate operation to other clusters
 			for c := 0; c < kv.nclusters; c++ {
 				// Iterate through each other cluster
 				if c != kv.cid {
@@ -128,6 +138,31 @@ func (kv *ShardKV) replicationWorker() {
 					// Send PutAfter request to group until success
 					go kv.sendNeverDepend(op, group)
 				}
+			}
+			// Commit completed async replication to log
+			command := Op{
+				Type: OpAsyncReplicated,
+				ClientID: op.ClientID,
+				CommandID: op.CommandID,
+			}
+			_, term, leader := kv.rf.Start(command)
+			if !leader {
+				continue
+			}
+			// Wait until committed & applied
+			for {
+				kv.mu.Lock()
+				// Break when 1st element of toReplicate no longer matches the replicated operation
+				if len(kv.toReplicate) == 0 || !reflect.DeepEqual(kv.toReplicate[0], op) {
+					kv.mu.Unlock()
+					break
+				}
+				kv.mu.Unlock()
+				// Also break if no longer leader for same term
+				if t, l := kv.rf.GetState(); !l || t != term {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
 		} else {
 			kv.mu.Unlock()

@@ -268,6 +268,8 @@ func (kv *ShardKV) apply(op Op) {
 		kv.applyGetByVersion(op)
 	case OpPutAfter:
 		kv.applyPutAfter(op)
+	case OpAsyncReplicated:
+		kv.applyAsyncReplicated(op)
 	case OpNeverDepend:
 		kv.applyNeverDepend(op)
 	case OpConfChangePrep:
@@ -302,6 +304,7 @@ func (kv *ShardKV) applyPutAfter(op Op) {
 			// Append put operation with the generated version number to replication queue
 			// DPrintf("%d-%d-%d adding to toReplicate", kv.cid, kv.gid, kv.me)
 			op.Version = version
+			// Add PutAfter operation to replication queue
 			kv.toReplicate = append(kv.toReplicate, op)
 		} else {
 			// If version specified,
@@ -331,7 +334,7 @@ func (kv *ShardKV) applySnapshot(snapshot KVSnapshot) {
 	kv.curConfig = snapshot.CurConfig
 	kv.nextConfig = snapshot.NextConfig
 	kv.accepted = snapshot.Accepted
-	// kv.toReplicate = snapshot.ToReplicate
+	kv.toReplicate = snapshot.ToReplicate
 }
 
 // Periodically apply newly committed commands from applyCh
@@ -368,7 +371,7 @@ func (kv *ShardKV) backgroundWorker() {
 				kv.curConfig,
 				kv.nextConfig,
 				kv.accepted,
-				// kv.toReplicate,
+				kv.toReplicate,
 			}
 			kv.rf.Snapshot(snapshot, kv.lastAppliedIndex)
 		}
