@@ -1,3 +1,6 @@
+/* lamport.go
+ Functions related to the Lamport timestamp & version numbers
+ */
 package copskv
 
 

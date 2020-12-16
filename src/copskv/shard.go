@@ -1,3 +1,6 @@
+/* shard.go
+ Structs & functions related to managing shards & config changes
+ */
 package copskv
 
 import (
@@ -6,6 +9,17 @@ import (
 	"copsmaster"
 )
 
+
+type GetShardArgs struct {
+	ConfigNum int
+	Shard     int
+}
+
+type GetShardReply struct {
+	Err Err
+	Shard map[string]Entry
+	LastApplied map[int64]CmdResults
+}
 
 func (kv *ShardKV) GetShard(args *GetShardArgs, reply *GetShardReply) {
 	kv.mu.Lock()
@@ -43,6 +57,7 @@ func (kv *ShardKV) GetShard(args *GetShardArgs, reply *GetShardReply) {
 		reply.LastApplied = relevantLastApplied
 	}
 }
+
 
 // When leader, periodically handles config changes
 // A) checks for config updates to start new config changes

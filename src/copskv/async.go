@@ -1,9 +1,58 @@
+/* async.go
+ Functions & structs related to asynchronous replication between clusters
+ - Asynchronous replication goroutine (replicationWorker) + subroutines/forks
+ - NeverDepend RPC (invoked from sendNeverDepend, a child of replicationWorker)
+ */
 package copskv
 
 import (
 	"sync"
 	"time"
 )
+
+
+type NeverDependArgs struct {
+	Key string
+	Version uint64
+	ClientID int64
+}
+
+type NeverDependReply struct {
+	WrongLeader bool
+	Err Err
+}
+
+func (kv *ShardKV) NeverDepend(args *NeverDependArgs, reply *NeverDependReply) {
+	command := Op{}
+	command.Type = OpNeverDepend
+	command.Key = args.Key
+	command.Version = args.Version
+	command.ClientID = args.ClientID
+	_, term, isLeader := kv.rf.Start(command)
+	if !isLeader {
+		reply.WrongLeader = true
+		return
+	}
+	for {
+		// If matching command applied, return
+		kv.mu.Lock()
+		lastApplied, ok := kv.lastApplied[args.ClientID]
+		kv.mu.Unlock()
+		if ok && lastApplied.Cmd.Type == OpNeverDepend &&
+		   lastApplied.Cmd.Version == args.Version {
+			reply.WrongLeader = false
+			reply.Err = lastApplied.Err
+			break
+		}
+		// Keep checking if still leader (for the same term)
+		if curTerm, _ := kv.rf.GetState(); curTerm != term {
+			reply.WrongLeader = true
+			break
+		}
+		// Yield lock to let background routine apply commands
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 
 // Asynchronously replicates put operations
@@ -122,36 +171,3 @@ func (kv *ShardKV) sendNeverDepend(op Op, group []string) {
 		time.Sleep(time.Millisecond)
 	}
 }
-
-func (kv *ShardKV) NeverDepend(args *NeverDependArgs, reply *NeverDependReply) {
-	command := Op{}
-	command.Type = OpNeverDepend
-	command.Key = args.Key
-	command.Version = args.Version
-	command.ClientID = args.ClientID
-	_, term, isLeader := kv.rf.Start(command)
-	if !isLeader {
-		reply.WrongLeader = true
-		return
-	}
-	for {
-		// If matching command applied, return
-		kv.mu.Lock()
-		lastApplied, ok := kv.lastApplied[args.ClientID]
-		kv.mu.Unlock()
-		if ok && lastApplied.Cmd.Type == OpNeverDepend &&
-		   lastApplied.Cmd.Version == args.Version {
-			reply.WrongLeader = false
-			reply.Err = lastApplied.Err
-			break
-		}
-		// Keep checking if still leader (for the same term)
-		if curTerm, _ := kv.rf.GetState(); curTerm != term {
-			reply.WrongLeader = true
-			break
-		}
-		// Yield lock to let background routine apply commands
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-

@@ -1,9 +1,12 @@
+/* server.go
+ Contains the 'main' server code:
+ - All client-facing RPCs (GetByVersion, PutAfter)
+ - Applying kv-store state changes
+ - Snapshotting
+ */
 package copskv
 
 import (
-	"log"
-	"os"
-	"sync"
 	"time"
 
 	"labgob"
@@ -11,120 +14,6 @@ import (
 	"raft"
 	"copsmaster"
 )
-
-
-const Debug = 1
-var logFile *os.File = nil
-
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug > 0 {
-		if logFile == nil {
-			var err error
-			logFile, err = os.OpenFile("debug-logs.txt", os.O_RDWR | os.O_CREATE | os.O_TRUNC, 0666)
-			if err != nil {
-				log.Fatal("error opening logFile", err)
-			}
-			log.SetOutput(logFile)
-		}
-		log.Printf(format, a...)
-	}
-	return
-}
-
-
-const (
-	OpRegisterClient uint8 = iota
-	OpPutAfter
-	OpGetByVersion
-	OpDepCheck
-	OpNeverDepend
-	OpConfChangePrep
-	OpConfChange
-)
-
-type Op struct {
-	Type uint8
-	Key string
-	Value string
-
-	Version uint64
-	Nearest map[string]uint64
-
-	ClientID int64
-	CommandID uint8
-	ConfigNum int
-
-	Config copsmaster.Config
-
-	ShardStore map[int]map[string]Entry
-	LastApplied map[int64]CmdResults
-}
-
-type ShardKV struct {
-	mu           sync.Mutex
-	me           int
-	rf           *raft.Raft
-	applyCh      chan raft.ApplyMsg
-
-	make_end     func(string) *labrpc.ClientEnd
-	gid          int
-	nodeID       uint32
-	masters      []*labrpc.ClientEnd
-	mck          *copsmaster.Clerk
-
-	interConf    bool
-	curConfig    copsmaster.Config
-	nextConfig   copsmaster.Config
-	accepted     [copsmaster.NShards]bool
-
-	cid          int // cluster ID
-	nclusters    int
-	configs      []copsmaster.Config // Other clusters' configurations
-	mcks         []*copsmaster.Clerk
-
-	maxraftstate int // snapshot if log grows this big
-	lastAppliedIndex int // log index of last applied command
-
-	lastApplied map[int64]CmdResults
-	kvstore [copsmaster.NShards]map[string]Entry // keep a separate k-v store for each shard
-
-	latestTimestamp uint32 // The latest timestamp witnessed
-
-	toReplicate  []Op
-	asyncputmu   sync.Mutex
-}
-
-type Entry struct {
-	Version uint64 // higher bits lamport timestamp, lower bits node ID (cluster + group + node)
-	Value string
-	Deps map[string]uint64 // key:value
-	NeverDepend bool
-}
-
-type CmdResults struct {
-	Cmd Op
-	CommandID uint8
-	Key string
-	Value string
-	Err Err
-
-	Version uint64
-	Deps map[string]uint64
-	NeverDepend bool
-}
-
-type KVSnapshot struct {
-	LastApplied map[int64]CmdResults
-	KVStore [copsmaster.NShards]map[string]Entry
-	LastAppliedIndex int
-
-	InterConf bool
-	CurConfig  copsmaster.Config
-	NextConfig copsmaster.Config
-	Accepted   [copsmaster.NShards]bool
-
-	// ToReplicate []Op
-}
 
 
 func (kv *ShardKV) GetByVersion(args *GetByVersionArgs, reply *GetByVersionReply) {

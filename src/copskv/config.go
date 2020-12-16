@@ -1,3 +1,8 @@
+/* config.go
+ Functions for setting up & shutting down a COPS system
+ Config struct represents a single COPS wide-area system
+ Functions modified from those given in other config.go files
+ */
 package copskv
 
 import (

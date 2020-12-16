@@ -1,3 +1,6 @@
+/* client.go
+ All COPS-KV client code
+ */
 package copskv
 
 //

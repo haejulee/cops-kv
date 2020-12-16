@@ -1,3 +1,8 @@
+/* depcheck.go
+ Functions & structs related to dependency checking in async Put operations
+ - DepCheck RPC (invoked by doDepCheck from node in same cluster)
+ - doDepChecks & doDepCheck: invoked by async PutAfter
+ */
 package copskv
 
 import (
@@ -5,6 +10,16 @@ import (
 	"time"
 )
 
+
+type DepCheckArgs struct {
+	Key string
+	Version uint64
+}
+
+type DepCheckReply struct {
+	WrongLeader bool
+	Ok bool
+}
 
 func (kv *ShardKV) DepCheck(args *DepCheckArgs, reply *DepCheckReply) {
 	// Make sure leader
@@ -25,6 +40,7 @@ func (kv *ShardKV) DepCheck(args *DepCheckArgs, reply *DepCheckReply) {
 		reply.Ok = false
 	}
 }
+
 
 // Blocks until all dependencies in deps are satisfied in the cluster
 func (kv *ShardKV) doDepChecks(deps map[string]uint64) {

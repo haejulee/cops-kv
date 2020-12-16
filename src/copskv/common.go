@@ -1,3 +1,6 @@
+/* common.go
+ Structs & constants shared between client & server
+ */
 package copskv
 
 //
@@ -56,36 +59,4 @@ type GetByVersionReply struct {
 	Version     uint64
 	Deps        map[string]uint64
 	NeverDepend bool
-}
-
-type GetShardArgs struct {
-	ConfigNum int
-	Shard     int
-}
-
-type GetShardReply struct {
-	Err Err
-	Shard map[string]Entry
-	LastApplied map[int64]CmdResults
-}
-
-type DepCheckArgs struct {
-	Key string
-	Version uint64
-}
-
-type DepCheckReply struct {
-	WrongLeader bool
-	Ok bool
-}
-
-type NeverDependArgs struct {
-	Key string
-	Version uint64
-	ClientID int64
-}
-
-type NeverDependReply struct {
-	WrongLeader bool
-	Err Err
 }
