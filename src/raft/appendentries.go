@@ -1,5 +1,7 @@
 package raft
 
+import "reflect"
+
 type AppendEntriesArgs struct {
 	Term,
 	LeaderID,
@@ -78,7 +80,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				for i := 1; i <= len(args.Entries); i++ {
 					existing := rf.logEntry(args.PrevLogIndex + i)
 					new := args.Entries[i - 1]
-					if existing.Term != new.Term || existing.Command != new.Command {
+					if existing.Term != new.Term || !reflect.DeepEqual(existing.Command, new.Command) {
 						notMatch = true
 						DPrintf("not match:", existing, new)
 						break
