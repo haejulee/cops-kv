@@ -38,7 +38,7 @@ func (rf *Raft) logEntry(index int) *logEntry {
 	if index == 0 {
 		return &logEntry{0,nil}
 	}
-	if index <= rf.SnapshotIndex {
+	if index <= rf.SnapshotIndex || index > rf.highestLogIndex() {
 		DPrintf("Raft %d logEntry: index %d snapshotIndex %d logLength %d\n", rf.me, index, rf.SnapshotIndex, len(rf.Log))
 	}
 	return &(rf.Log[index - 1 - rf.SnapshotIndex])
@@ -107,8 +107,10 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.CurrentTerm = CurrentTerm
 	rf.VotedFor = VotedFor
 	rf.SnapshotIndex = SnapshotIndex
+	DPrintf("readPersist %d SnapshotIndex %d\n", rf.me, rf.SnapshotIndex)
 	rf.SnapshotTerm = SnapshotTerm
 	rf.Log = make([]logEntry, nLogs)
+	DPrintf("readPersist %d log length %d\n", rf.me, len(rf.Log))
 	for i:=0; i<nLogs; i++ {
 		var entry logEntry
 		if d.Decode(&entry) != nil {
@@ -147,6 +149,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	entry := logEntry{term, command}
 	// Append new log entry to log
 	rf.Log = append(rf.Log, entry)
+	DPrintf("Start %d log length %d\n", rf.me, len(rf.Log))
 	// Persist changes to log
 	rf.persist()
 	rf.mu.Unlock()
@@ -180,7 +183,7 @@ func (rf *Raft) Kill() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	labgob.Register(RaftSnapshot{})
-	DPrintf("Making Raft peer\n")
+	// DPrintf("Making Raft peer\n")
 	
 	rf := &Raft{}
 	rf.peers = peers
@@ -193,29 +196,36 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.CurrentTerm = 0			// Start at term 0
 	rf.VotedFor = -1			// Null value of votedFor is -1
 	rf.Log = []logEntry{}		// Initialize empty log
+	DPrintf("Make %d log length %d\n", rf.me, len(rf.Log))
 	rf.SnapshotIndex = 0		// Start at dummy index 0
+	DPrintf("Make1 %d SnapshotIndex %d\n", rf.me, rf.SnapshotIndex)
 	rf.SnapshotTerm = 0			// Start at dummy term 0
+	
+	// DPrintf("Reading persistent state\n")
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
 
 	// Initialize volatile state
-	rf.commitIndex = 0			// Start at commitIndex 0
-	rf.lastApplied = 0			// Start at lastApplied 0
-	rf.currentRole = Follower	// Start as Follower
+	rf.commitIndex = rf.SnapshotIndex  // Start at commitIndex 0 or snapshot index
+	DPrintf("Make1 %d commitIndex %d\n", rf.me, rf.commitIndex)
+	rf.lastApplied = 0                 // Start at lastApplied 0
+	rf.currentRole = Follower          // Start as Follower
 
 	// Initialize leader state arrays
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 
-	DPrintf("Reading persistent state\n")
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
-
-	DPrintf("Reading snapshot\n")
+	// DPrintf("Reading snapshot\n")
 	// Recover snapshot from persistent state if applicable
 	snapshot, ok := rf.readSnapshot()
 	if ok {
-		DPrintf("Raft %d recovering from snapshot\n", rf.me)
+		// DPrintf("Raft %d recovering from snapshot\n", rf.me)
+		rf.SnapshotIndex = snapshot.LastIncludedIndex
+		DPrintf("Make2 %d SnapshotIndex %d\n", rf.me, rf.SnapshotIndex)
+		rf.SnapshotTerm = snapshot.LastIncludedTerm
 		rf.lastApplied = rf.SnapshotIndex
 		rf.commitIndex = rf.SnapshotIndex
+		DPrintf("Make2 %d commitIndex %d\n", rf.me, rf.commitIndex)
 		go recoverFromSnapshot(applyCh, ApplyMsg{ false, snapshot.Snapshot, -1 })
 	}
 
@@ -226,7 +236,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Start background routine that will apply commands as they're committed
 	go rf.applyCommands()
 
-	DPrintf("Made Raft peer\n")
+	// DPrintf("Made Raft peer\n")
 	return rf
 }
 
@@ -241,7 +251,7 @@ func (rf *Raft) applyCommands() {
 		for rf.lastApplied < rf.commitIndex {
 			i = rf.lastApplied + 1
 			msg := ApplyMsg{true, rf.logEntry(i).Command, i}
-			// DPrintf("Raft %d applying entry %d\n", rf.me, i)
+			DPrintf("Raft %d applying entry %d\n", rf.me, i)
 			rf.lastApplied = i
 			rf.mu.Unlock()
 			rf.applyCh <- msg

@@ -32,12 +32,14 @@ func (rf *Raft) leaderLogReplication(term int) {
 				// commit index & continue
 				if ct > len(rf.peers)/2 {
 					rf.commitIndex = commitIndex
+					DPrintf("leaderLogReplication %d commitIndex %d\n", rf.me, rf.commitIndex)
 				} else { // Else, break from for loop
 					break
 				}
 			}
 		}
 		// Initiate log replications
+		// DPrintf("leader log length %d last elem", rf.highestLogIndex(), rf.logEntry(rf.highestLogIndex()))
 		for i, nextIndex := range rf.nextIndex {
 			// If last log index >= nextIndex
 			if i != rf.me && rf.highestLogIndex() >= nextIndex {

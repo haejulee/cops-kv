@@ -67,8 +67,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		changesMade := false
 		// If the conditions are right for appending the entries:
 		if len(args.Entries) > 0 {
-			// Append any new entries not already in the log
-			rf.Log = append(rf.logSlice(-1,args.PrevLogIndex), args.Entries...)
+			if rf.highestLogIndex() <= (args.PrevLogIndex + len(args.Entries)) {
+				// If log contains less entries than it would with the given entries,
+				// append clean copy of given entries to Log[:args.PrevLogIndex]
+				rf.Log = append(rf.logSlice(-1,args.PrevLogIndex), args.Entries...)
+			} else {
+				// Else, first check if existing entries match given entries
+				// If not a perfect match, discard entries that are more ahead
+				notMatch := false
+				for i := 1; i <= len(args.Entries); i++ {
+					existing := rf.logEntry(args.PrevLogIndex + i)
+					new := args.Entries[i - 1]
+					if existing.Term != new.Term || existing.Command != new.Command {
+						notMatch = true
+						DPrintf("not match:", existing, new)
+						break
+					}
+				}
+				if notMatch {
+					rf.Log = append(rf.logSlice(-1,args.PrevLogIndex), args.Entries...)
+				}
+			}
+			DPrintf("AppendEntries %d log length %d\n", rf.me, len(rf.Log))
 			changesMade = true
 		}
 		// If term > rf.CurrentTerm, update currentTerm
@@ -82,12 +102,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if changesMade {
 			rf.persist()
 		}
-		// Update commit index
-		highestLogIndex = rf.highestLogIndex()
-		if args.LeaderCommit > highestLogIndex {
-			rf.commitIndex = highestLogIndex
-		} else {
-			rf.commitIndex = args.LeaderCommit
+		// Update commit index if args.LeaderCommit is news
+		// note: it may be old news if follower's latest applied index has
+		// already surpassed the known commit index
+		// ALSO only do this if it's not a heartbeat message
+		if args.LeaderCommit > rf.commitIndex && args.PrevLogIndex >= 0 {
+			highestLogIndex = rf.highestLogIndex()
+			if args.LeaderCommit > highestLogIndex {
+				rf.commitIndex = highestLogIndex
+				DPrintf("AppendEntries1 %d commitIndex %d\n", rf.me, rf.commitIndex)
+			} else {
+				rf.commitIndex = args.LeaderCommit
+				DPrintf("AppendEntries2 %d commitIndex %d highestLogIndex %d\n", rf.me, rf.commitIndex, highestLogIndex)
+			}
 		}
 		// Reset election timeout
 		rf.resetTimeout()

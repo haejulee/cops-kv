@@ -28,7 +28,7 @@ type RaftSnapshot struct {
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
-	DPrintf("Raft %d install snapshot index %d\n", rf.me, args.LastIncludedIndex)
+	// DPrintf("Raft %d install snapshot index %d\n", rf.me, args.LastIncludedIndex)
 	reply.Term = rf.CurrentTerm
 	// If term is less than current term, return immediately
 	if args.Term < rf.CurrentTerm {
@@ -45,19 +45,23 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	if rf.highestLogIndex() > args.LastIncludedIndex &&
 	   rf.logEntry(args.LastIncludedIndex).Term == args.LastIncludedTerm {
 		rf.Log = rf.logSlice(args.LastIncludedIndex+1, -1)
+		DPrintf("InstallSnapshot1 %d log length %d\n", rf.me, len(rf.Log))
 	} else { // Else, discard the entire log
 		rf.Log = []logEntry{}
+		DPrintf("InstallSnapshot2 %d log length %d\n", rf.me, len(rf.Log))
 	}
 	// Update rf.SnapshotIndex and rf.SnapshotTerm
 	rf.SnapshotIndex = args.LastIncludedIndex
+	DPrintf("InstallSnapshot %d SnapshotIndex %d\n", rf.me, rf.SnapshotIndex)
 	rf.SnapshotTerm = args.LastIncludedTerm
 	// Save updated state & snapshot to persistent storage
 	state := rf.encodePersistentState()
 	snapshot := RaftSnapshot{args.Snapshot, args.LastIncludedIndex, args.LastIncludedTerm}
 	rf.persister.SaveStateAndSnapshot(state, rf.encodeSnapshot(snapshot))
 	// Update rf.commitIndex if necessary
-	if rf.commitIndex < args.LastIncludedIndex {
-		rf.commitIndex = args.LastIncludedIndex
+	if rf.commitIndex < rf.SnapshotIndex {
+		rf.commitIndex = rf.SnapshotIndex
+		DPrintf("InstallSnapshot %d commitIndex %d\n", rf.me, rf.commitIndex)
 	}
 	// Apply snapshot to applyCh if necessary
 	if rf.lastApplied < args.LastIncludedIndex {
@@ -82,7 +86,7 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 func (rf *Raft) Snapshot(snapshot interface{}, index int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("Raft %d snapshotting at index %d\n", rf.me, index)
+	// DPrintf("Raft %d snapshotting at index %d\n", rf.me, index)
 	// If there's nothing to snapshot, return immediately
 	if index <= rf.SnapshotIndex {
 		return
@@ -92,11 +96,14 @@ func (rf *Raft) Snapshot(snapshot interface{}, index int) {
 	// Truncate the raft log to reflect snapshot
 	if rf.highestLogIndex() > index {
 		rf.Log = rf.logSlice(index+1, -1)
-		} else {
-			rf.Log = []logEntry{}
-		}
+		DPrintf("Snapshot1 %d log length %d\n", rf.me, len(rf.Log))
+	} else {
+		rf.Log = []logEntry{}
+		DPrintf("Snapshot2 %d log length %d\n", rf.me, len(rf.Log))
+	}
 	// Record index of last entry in the snapshot
 	rf.SnapshotIndex = index
+	DPrintf("Snapshot %d SnapshotIndex %d\n", rf.me, rf.SnapshotIndex)
 	// Create a new Raft snapshot wrapping the service snapshot
 	rss := RaftSnapshot{snapshot, rf.SnapshotIndex, rf.SnapshotTerm}
 	// Save snapshot & new raft state to persistent storage
