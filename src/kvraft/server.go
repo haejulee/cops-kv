@@ -72,6 +72,14 @@ type KVSnapshot struct {
 }
 
 
+func (op Op) compare(other Op) int {
+	if op.ClientID == other.ClientID &&
+	   op.CommandID == other.CommandID {
+		return 0
+	}
+	return 1
+}
+
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// DPrintf("Get RPC: %d\n", args.CommandID)
 	setWrongLeader := func() {
