@@ -3,7 +3,6 @@ package shardmaster
 
 import (
 	"log"
-	"os"
 	"sync"
 	"time"
 
@@ -14,18 +13,18 @@ import (
 
 
 const Debug = 0
-var logFile *os.File = nil
+// var logFile *os.File = nil
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
-		if logFile == nil {
-			var err error
-			logFile, err = os.OpenFile("debug-logs.txt", os.O_RDWR | os.O_CREATE | os.O_TRUNC, 0666)
-			if err != nil {
-				log.Fatal("error opening logFile", err)
-			}
-			log.SetOutput(logFile)
-		}
+		// if logFile == nil {
+		// 	var err error
+		// 	logFile, err = os.OpenFile("debug-logs.txt", os.O_RDWR | os.O_CREATE | os.O_TRUNC, 0666)
+		// 	if err != nil {
+		// 		log.Fatal("error opening logFile", err)
+		// 	}
+		// 	log.SetOutput(logFile)
+		// }
 		log.Printf(format, a...)
 	}
 	return
@@ -69,6 +68,14 @@ type Op struct {
 	IDs []int // GIDs in LeaveArgs
 }
 
+func (op Op) compare(other Op) int {
+	if op.ClientID == other.ClientID &&
+	   op.CommandID == other.CommandID {
+		return 0
+	}
+	return 1
+}
+
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	setWrongLeader := func() {
@@ -90,8 +97,8 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	}
 	sm.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
 	if reply.WrongLeader == false {
-		DPrintf("sm %d Join\n", sm.me, args.Servers)
-		DPrintf("sm %d Join return:\n", sm.me, *reply)
+		// DPrintf("Join", args.Servers)
+		// DPrintf("sm %d Join return:\n", sm.me, *reply)
 	}
 }
 
@@ -115,8 +122,8 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 	}
 	sm.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
 	if reply.WrongLeader == false {
-		DPrintf("sm %d Leave\n", sm.me, args.GIDs)
-		DPrintf("sm %d Leave return:\n", sm.me, *reply)
+		// DPrintf("Leave", args.GIDs)
+		// DPrintf("sm %d Leave return:\n", sm.me, *reply)
 	}
 }
 
@@ -140,8 +147,8 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 	}
 	sm.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
 	if reply.WrongLeader == false {
-		DPrintf("sm %d Move %d %d\n", sm.me, args.Shard, args.GID)
-		DPrintf("sm %d Move return:\n", sm.me, *reply)
+		// DPrintf("sm %d Move %d %d\n", sm.me, args.Shard, args.GID)
+		// DPrintf("sm %d Move return:\n", sm.me, *reply)
 	}
 }
 
@@ -166,8 +173,8 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 	}
 	sm.RPCHandler(setWrongLeader, lastAppliedMatch, createCommand)
 	if reply.WrongLeader == false {
-		DPrintf("sm %d Query %d\n", sm.me, args.Num)
-		DPrintf("sm %d Query return:\n", sm.me, *reply)
+		// DPrintf("sm %d Query %d\n", sm.me, args.Num)
+		// DPrintf("Query return:", *reply)
 	}
 }
 
@@ -282,7 +289,6 @@ func (sm *ShardMaster) apply(op Op) {
 	case OpJoin:
 		// Retrieve argument, servers
 		servers := op.Servers
-		// TODO
 		// Get the most recent existing config
 		lastConfig := sm.configs[len(sm.configs) - 1]
 		// Calculate ID of the next config to be made
@@ -431,6 +437,6 @@ func reassignShards(shards [NShards]int, groups ServerMap) [NShards]int {
 			}
 		}
 	}
-	DPrintf("", shards)
+	// DPrintf("", shards)
 	return shards
 }
